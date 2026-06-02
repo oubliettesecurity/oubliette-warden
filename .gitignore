@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+*.env
+
+# Regenerable data (NVD corpus / Qdrant) — rebuild via scripts/
+data/
+*.db
+*.sqlite3
+
+# Agent / editor state
+.claude/
+.idea/
+.vscode/

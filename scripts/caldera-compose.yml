@@ -1,0 +1,69 @@
+# MITRE CALDERA emulation substrate for the Oubliette Warden Phase I prototype.
+#
+# Pinned image rather than `:latest` so eval runs are reproducible. Bind the
+# CALDERA REST API to localhost only — Phase I never exposes it to anything
+# outside the developer workstation.
+#
+# Usage:
+#   docker compose -f scripts/caldera-compose.yml up -d
+#   curl -s http://127.0.0.1:8888/api/v2/health
+#
+# Bring down with `down -v` to wipe state between eval runs.
+
+services:
+
+  caldera:
+    image: ghcr.io/mitre/caldera:5.0.0
+    container_name: oubliette_warden-caldera
+    ports:
+      - "127.0.0.1:8888:8888"
+    environment:
+      - CALDERA_INSECURE=false
+    volumes:
+      - caldera-data:/usr/src/app/data
+      - caldera-conf:/usr/src/app/conf
+    networks:
+      - oubliette_warden-emul
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8888/api/v2/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # Vulnerable target stand-in for the Phase I demo. CALDERA's own agents
+  # provide the bulk of the range; this is a static service the planner can
+  # be pointed at as a deterministic test fixture.
+  #
+  # Pinned digest: ensures the "vulnerabilities" surfaced by the analyst are
+  # reproducible between eval runs. Bump deliberately, never via `:latest`.
+  vulnerable-target:
+    image: digininja/dvwa:2.5
+    container_name: oubliette_warden-target-dvwa
+    networks:
+      - oubliette_warden-emul
+    expose:
+      - "80"
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: oubliette_warden-qdrant
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - oubliette_warden-emul
+    restart: unless-stopped
+
+networks:
+  oubliette_warden-emul:
+    driver: bridge
+    internal: false  # CALDERA needs outbound for agent registration plugins; lock down in Phase II
+
+volumes:
+  caldera-data:
+  caldera-conf:
+  qdrant-data:

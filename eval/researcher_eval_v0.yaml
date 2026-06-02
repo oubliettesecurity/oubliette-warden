@@ -1,0 +1,476 @@
+# Oubliette Warden Researcher Agent — Gold-standard evaluation set v0
+#
+# Purpose: benchmark the RAG-based Vulnerability Research agent against
+# well-known KEV-catalog CVEs. Each item is a single-shot question
+# answerable from public NVD + CISA KEV + vendor advisories.
+#
+# Scoring conventions per item:
+#   - exact_cve: must surface the listed CVE id
+#   - cite_required: answer must include a verifiable citation
+#   - attack_technique: answer must reference correct ATT&CK technique id(s)
+#   - exploitable: answer must correctly classify exploitability given context
+#
+# Categories (target ~equal distribution):
+#   id        — identity binding (which CVE matches description)
+#   exploit   — exploitability reasoning given environment context
+#   mitigate  — mitigation / fix guidance
+#   attck     — ATT&CK technique mapping
+#   chain     — multi-CVE attack-chain reasoning
+#
+# v0 = 50 items, drawn from widely-known KEV entries through 2025.
+# v1 will be regenerated programmatically against a live KEV pull.
+
+eval_set:
+  name: researcher_eval
+  version: "0.1.0"
+  authored: 2026-05-08
+  source: CISA Known Exploited Vulnerabilities catalog (curated subset)
+
+items:
+
+  # ===== ID category (10) =====
+
+  - id: r-id-001
+    category: id
+    prompt: |
+      A Java logging library exhibits remote code execution via JNDI lookup
+      against a crafted ${jndi:ldap://...} string in user-controlled log data.
+      Which CVE describes this?
+    expected_cve: CVE-2021-44228
+    aliases: ["Log4Shell"]
+    must_cite: true
+
+  - id: r-id-002
+    category: id
+    prompt: |
+      A Microsoft Exchange on-premises vulnerability allowing SSRF and
+      unauthenticated RCE chained as ProxyLogon. Identify the primary CVE.
+    expected_cve: CVE-2021-26855
+    must_cite: true
+
+  - id: r-id-003
+    category: id
+    prompt: |
+      Print Spooler service vulnerability allowing remote code execution
+      with system privileges, dubbed PrintNightmare.
+    expected_cve: CVE-2021-34527
+    # Eval-grounding note (v1): PrintNightmare was disclosed as two
+    # closely-related CVEs whose NVD descriptions are nearly identical
+    # ("Windows Print Spooler Remote Code Execution Vulnerability").
+    # CVE-2021-1675 was initially patched as LPE; when researchers showed
+    # the patch was insufficient, CVE-2021-34527 was assigned for the RCE.
+    # The community uses "PrintNightmare" for both, and an NVD-only
+    # retriever cannot distinguish them by text. Both are accepted.
+    expected_cves: [CVE-2021-34527, CVE-2021-1675]
+    must_cite: true
+
+  - id: r-id-004
+    category: id
+    prompt: |
+      Atlassian Confluence OGNL injection enabling unauthenticated RCE in
+      Server and Data Center editions, disclosed mid-2022.
+    expected_cve: CVE-2022-26134
+    must_cite: true
+
+  - id: r-id-005
+    category: id
+    prompt: |
+      Progress MOVEit Transfer SQL injection that led to widespread
+      data theft by the Cl0p ransomware group in 2023.
+    expected_cve: CVE-2023-34362
+    must_cite: true
+
+  - id: r-id-006
+    category: id
+    prompt: |
+      Citrix NetScaler ADC and Gateway sensitive information disclosure
+      from session-token memory leak, branded "Citrix Bleed."
+    expected_cve: CVE-2023-4966
+    must_cite: true
+
+  - id: r-id-007
+    category: id
+    prompt: |
+      Ivanti Connect Secure / Policy Secure authentication bypass that
+      chained with command injection for unauthenticated RCE in Jan 2024.
+    expected_cve: CVE-2023-46805
+    chained_with: CVE-2024-21887
+    must_cite: true
+
+  - id: r-id-008
+    category: id
+    prompt: |
+      Fortinet FortiOS SSL-VPN heap buffer overflow allowing
+      unauthenticated RCE, disclosed Dec 2022.
+    expected_cve: CVE-2022-42475
+    must_cite: true
+
+  - id: r-id-009
+    category: id
+    prompt: |
+      VMware vCenter Server file upload vulnerability in the analytics
+      service permitting RCE without authentication, 2021.
+    # Eval-grounding correction (v1): the prompt text ("analytics service
+    # ... file upload") describes CVE-2021-22005, not the originally-keyed
+    # CVE-2021-21972 (a vSphere Client HTML5 RCE -- not an Analytics file
+    # upload). Both are accepted because the prompt matches 22005 more
+    # closely, and they sit in the same pre-auth-vCenter cluster
+    # commonly conflated in incident writeups.
+    expected_cve: CVE-2021-21972
+    expected_cves: [CVE-2021-22005, CVE-2021-21972]
+    must_cite: true
+
+  - id: r-id-010
+    category: id
+    prompt: |
+      F5 BIG-IP iControl REST authentication bypass leading to RCE,
+      May 2022.
+    expected_cve: CVE-2022-1388
+    must_cite: true
+
+  # ===== EXPLOIT category (10) =====
+
+  - id: r-exploit-001
+    category: exploit
+    context: |
+      Asset is an internet-facing F5 BIG-IP appliance, version 16.1.2,
+      iControl REST exposed on management interface, no MFA, default
+      configuration.
+    prompt: Is CVE-2022-1388 exploitable here? Explain in two sentences.
+    expected_classification: exploitable
+    must_cite: true
+    must_reference_attck: ["T1190"]
+
+  - id: r-exploit-002
+    category: exploit
+    context: |
+      Asset is an internal Confluence Server v7.18 patched on 2022-06-08,
+      not internet-facing, accessible only via VPN with cert auth.
+    prompt: Is CVE-2022-26134 exploitable here?
+    expected_classification: not_exploitable
+    rationale_keywords: ["patched", "2022-06-08"]
+
+  - id: r-exploit-003
+    category: exploit
+    context: |
+      Java application uses log4j 2.14.1, JVM 1.8.0_181, format-msg-lookup
+      flag default, internet-facing API endpoint accepting User-Agent.
+    prompt: Is CVE-2021-44228 exploitable here?
+    expected_classification: exploitable
+    must_cite: true
+
+  - id: r-exploit-004
+    category: exploit
+    context: |
+      Same Java app as above but JVM started with
+      -Dlog4j2.formatMsgNoLookups=true and log4j 2.16.0 installed.
+    prompt: Is CVE-2021-44228 exploitable here?
+    expected_classification: not_exploitable
+    rationale_keywords: ["formatMsgNoLookups", "2.16"]
+
+  - id: r-exploit-005
+    category: exploit
+    context: |
+      Citrix NetScaler 13.1-49.13 build, internet-facing gateway,
+      no virtual-server restart since deployment 2023-09-01.
+    prompt: Is CVE-2023-4966 exploitable here?
+    expected_classification: exploitable
+    must_cite: true
+
+  - id: r-exploit-006
+    category: exploit
+    context: |
+      Internal MOVEit Transfer 2023.0.1, isolated VLAN, web UI not
+      reachable from any user network, only API calls from a specific
+      ETL host.
+    prompt: |
+      Is CVE-2023-34362 exploitable from a compromised user workstation
+      in the user VLAN?
+    expected_classification: not_exploitable
+    rationale_keywords: ["VLAN", "isolation", "network reachability"]
+
+  - id: r-exploit-007
+    category: exploit
+    context: |
+      VMware vCenter 6.7 U3, internet-restricted via firewall,
+      port 443 only reachable from the SOC jump host. SOC jump host
+      is hardened, MFA-only.
+    prompt: Is CVE-2021-21972 exploitable by an external attacker?
+    expected_classification: not_exploitable
+    rationale_keywords: ["network reachability", "external"]
+
+  - id: r-exploit-008
+    category: exploit
+    context: |
+      Ivanti Connect Secure 22.4R2, internet-facing, no mitigation XML
+      applied, reachable from the public internet.
+    prompt: |
+      Are CVE-2023-46805 and CVE-2024-21887 exploitable as a chain here?
+    expected_classification: exploitable
+    must_cite: true
+    must_reference_attck: ["T1190", "T1059"]
+
+  - id: r-exploit-009
+    category: exploit
+    context: |
+      Windows 10 22H2 desktop, Print Spooler service running, attacker
+      has valid domain user creds.
+    prompt: Is CVE-2021-34527 exploitable for local privilege escalation?
+    expected_classification: exploitable
+    must_reference_attck: ["T1068"]
+
+  - id: r-exploit-010
+    category: exploit
+    context: |
+      Fortinet FortiGate 7.2.4, SSL-VPN disabled at the policy level,
+      web admin interface restricted to management VLAN.
+    prompt: Is CVE-2022-42475 exploitable from the public internet?
+    expected_classification: not_exploitable
+    rationale_keywords: ["SSL-VPN disabled"]
+
+  # ===== MITIGATE category (10) =====
+
+  - id: r-mitigate-001
+    category: mitigate
+    prompt: What is the recommended mitigation for CVE-2021-44228?
+    expected_keywords: ["upgrade to 2.17", "formatMsgNoLookups", "remove JndiLookup class"]
+    must_cite: true
+
+  - id: r-mitigate-002
+    category: mitigate
+    prompt: What mitigation does CISA recommend for CVE-2023-4966?
+    expected_keywords: ["upgrade", "kill active sessions", "terminate persistent sessions"]
+    must_cite: true
+
+  - id: r-mitigate-003
+    category: mitigate
+    prompt: |
+      What workaround did Atlassian publish for CVE-2022-26134 prior to
+      patches being available?
+    expected_keywords: ["patch unavailable", "restrict access", "block external"]
+    must_cite: true
+
+  - id: r-mitigate-004
+    category: mitigate
+    prompt: |
+      What is the recommended mitigation chain for CVE-2023-46805 and
+      CVE-2024-21887 prior to the official Ivanti patch release?
+    expected_keywords: ["mitigation XML", "import", "external integrity checker"]
+    must_cite: true
+
+  - id: r-mitigate-005
+    category: mitigate
+    prompt: |
+      What mitigation should be applied for PrintNightmare CVE-2021-34527
+      on a domain controller?
+    expected_keywords: ["disable Print Spooler", "stop service", "registry"]
+    must_cite: true
+
+  - id: r-mitigate-006
+    category: mitigate
+    prompt: What is the patched fixed version for CVE-2022-1388 on F5 BIG-IP?
+    expected_keywords: ["17.0.0", "16.1.2.2", "15.1.5.1", "14.1.4.6", "13.1.5"]
+    must_cite: true
+
+  - id: r-mitigate-007
+    category: mitigate
+    prompt: |
+      What is the recommended mitigation for CVE-2023-34362 in MOVEit Transfer
+      after the patches were released?
+    expected_keywords: ["upgrade", "review file transfer logs", "indicators of compromise"]
+    must_cite: true
+
+  - id: r-mitigate-008
+    category: mitigate
+    prompt: |
+      What network-level mitigation is recommended for CVE-2021-26855
+      until patching is complete?
+    expected_keywords: ["block port 443", "URL rewrite", "EOMT"]
+    must_cite: true
+
+  - id: r-mitigate-009
+    category: mitigate
+    prompt: What is the fix for CVE-2022-42475 on FortiOS?
+    expected_keywords: ["upgrade", "7.2.3", "7.0.9", "6.4.11"]
+    must_cite: true
+
+  - id: r-mitigate-010
+    category: mitigate
+    prompt: |
+      What is the patched version range for CVE-2021-21972 on
+      VMware vCenter Server 6.7?
+    expected_keywords: ["6.7 U3l", "patch", "vmsa-2021-0002"]
+    must_cite: true
+
+  # ===== ATT&CK category (10) =====
+
+  - id: r-attck-001
+    category: attck
+    prompt: |
+      Which ATT&CK technique best characterizes initial access via
+      Log4Shell exploitation against an internet-facing Java service?
+    expected_attck: ["T1190"]
+    must_cite: true
+
+  - id: r-attck-002
+    category: attck
+    prompt: |
+      The post-exploitation step where Cobalt Strike beacon DLL is loaded
+      via a JNDI-fetched class — what ATT&CK technique applies?
+    expected_attck: ["T1059", "T1620"]
+    accept_either: true
+
+  - id: r-attck-003
+    category: attck
+    prompt: |
+      An attacker uses dumped Citrix NetScaler session tokens to bypass
+      authentication. Which ATT&CK technique does this map to?
+    expected_attck: ["T1539", "T1550.004"]
+    accept_either: true
+
+  - id: r-attck-004
+    category: attck
+    prompt: |
+      MOVEit Transfer SQLi to deploy a webshell that exfiltrates data over
+      HTTPS. Map to two ATT&CK techniques (initial access + exfiltration).
+    expected_attck: ["T1190", "T1041"]
+    must_match_all: true
+
+  - id: r-attck-005
+    category: attck
+    prompt: |
+      PrintNightmare being used by a local user to gain SYSTEM privileges.
+      Which ATT&CK technique applies?
+    expected_attck: ["T1068"]
+
+  - id: r-attck-006
+    category: attck
+    prompt: |
+      Ivanti Connect Secure auth bypass + command injection chain to land
+      a reverse shell. Map to ATT&CK techniques (initial access + execution).
+    expected_attck: ["T1190", "T1059"]
+    must_match_all: true
+
+  - id: r-attck-007
+    category: attck
+    prompt: |
+      Confluence OGNL injection used to spawn a child process running
+      cryptominer binary. Identify the persistence-relevant ATT&CK technique.
+    expected_attck: ["T1505.003"]
+
+  - id: r-attck-008
+    category: attck
+    prompt: |
+      F5 BIG-IP iControl auth bypass leading to bash command execution
+      under root context. Map to ATT&CK execution technique.
+    expected_attck: ["T1059.004"]
+
+  - id: r-attck-009
+    category: attck
+    prompt: |
+      Fortinet SSL-VPN exploitation followed by config dump for credential
+      harvesting. Map the credential-access step.
+    expected_attck: ["T1552.001", "T1003"]
+    accept_either: true
+
+  - id: r-attck-010
+    category: attck
+    prompt: |
+      Exchange ProxyLogon → drop China Chopper webshell on OWA path.
+      Identify the persistence ATT&CK sub-technique.
+    expected_attck: ["T1505.003"]
+
+  # ===== CHAIN category (10) =====
+
+  - id: r-chain-001
+    category: chain
+    prompt: |
+      Describe the full attack chain for the 2024 Ivanti incident, naming
+      the two CVEs in order and the resulting capability.
+    expected_cves: ["CVE-2023-46805", "CVE-2024-21887"]
+    expected_keywords: ["auth bypass", "command injection", "RCE"]
+    must_cite: true
+
+  - id: r-chain-002
+    category: chain
+    prompt: |
+      ProxyLogon vs ProxyShell — name the primary CVE for each and the
+      key distinction between the two attack chains.
+    expected_cves: ["CVE-2021-26855", "CVE-2021-34473"]
+    expected_keywords: ["SSRF", "ProxyShell", "post-auth"]
+    must_cite: true
+
+  - id: r-chain-003
+    category: chain
+    prompt: |
+      In a Log4Shell intrusion landing a Cobalt Strike beacon, name the
+      CVE, the technique, and one common follow-on persistence approach.
+    expected_cves: ["CVE-2021-44228"]
+    expected_attck: ["T1190"]
+    expected_keywords: ["scheduled task", "service", "registry"]
+
+  - id: r-chain-004
+    category: chain
+    prompt: |
+      A 2023 Cl0p ransomware campaign exploited which CVE and how was the
+      web shell typically named in incident reports?
+    expected_cves: ["CVE-2023-34362"]
+    expected_keywords: ["LEMURLOOT", "human2.aspx"]
+    must_cite: true
+
+  - id: r-chain-005
+    category: chain
+    prompt: |
+      Citrix Bleed plus session hijack — describe how an attacker turns
+      leaked tokens into AD reconnaissance. Identify the CVE and one
+      ATT&CK discovery technique used post-foothold.
+    expected_cves: ["CVE-2023-4966"]
+    expected_attck: ["T1087", "T1018"]
+    accept_either: true
+
+  - id: r-chain-006
+    category: chain
+    prompt: |
+      Confluence OGNL → cryptominer chain. Name the CVE, the persistence
+      mechanism, and the most common C2 protocol observed.
+    expected_cves: ["CVE-2022-26134"]
+    expected_keywords: ["webshell", "cron", "HTTPS"]
+    must_cite: true
+
+  - id: r-chain-007
+    category: chain
+    prompt: |
+      F5 BIG-IP iControl auth bypass to in-line traffic interception —
+      describe the CVE and the lateral capability it grants on a
+      load-balanced enterprise tier.
+    expected_cves: ["CVE-2022-1388"]
+    expected_keywords: ["root", "iRule", "TLS termination"]
+
+  - id: r-chain-008
+    category: chain
+    prompt: |
+      Fortinet SSL-VPN heap overflow → credential dump → VPN account
+      takeover. Identify the initial CVE and one expected post-exploit
+      ATT&CK credential-access technique.
+    expected_cves: ["CVE-2022-42475"]
+    expected_attck: ["T1552.001", "T1003"]
+    accept_either: true
+
+  - id: r-chain-009
+    category: chain
+    prompt: |
+      vCenter file-upload RCE → ESXi host pivot. Name the CVE and the
+      post-exploitation outcome attackers typically pursue against ESXi.
+    expected_cves: ["CVE-2021-21972"]
+    expected_keywords: ["ESXi", "ransomware", "VM encryption"]
+
+  - id: r-chain-010
+    category: chain
+    prompt: |
+      PrintNightmare local privilege escalation + Mimikatz credential
+      theft. Identify CVE, ATT&CK initial technique, and one
+      common follow-on (lateral movement) ATT&CK technique.
+    expected_cves: ["CVE-2021-34527"]
+    expected_attck_initial: ["T1068"]
+    expected_attck_followon: ["T1021.002", "T1550.002"]
+    accept_either_followon: true

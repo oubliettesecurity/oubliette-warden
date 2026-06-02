@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oubliette-warden"
+version = "0.1.0"
+description = "Safety-gated multi-agent framework for authorized cyber operations and penetration testing"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Oubliette Security" }]
+keywords = [
+    "agentic-ai", "ai-security", "cybersecurity", "penetration-testing",
+    "red-team", "multi-agent", "mitre-attack", "autonomous-agents",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+research = [
+    "qdrant-client>=1.7.0",
+    "ollama>=0.1.0",
+    "requests>=2.28.0",
+]
+all = [
+    "qdrant-client>=1.7.0",
+    "ollama>=0.1.0",
+    "requests>=2.28.0",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+oubliette-warden = "oubliette_warden.demo.run:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["oubliette_warden*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
