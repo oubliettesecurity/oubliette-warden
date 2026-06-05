@@ -43,6 +43,10 @@ all = [
 dev = [
     "pytest>=8.0",
 ]
+# Clean-machine test environment: `uv pip install -e ".[test]" && pytest` -> green.
+test = [
+    "oubliette-warden[dev]",
+]
 
 [project.scripts]
 oubliette-warden = "oubliette_warden.demo.run:main"
