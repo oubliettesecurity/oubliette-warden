@@ -17,9 +17,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from oubliette_warden.operator_ui.review_queue import ReviewQueue
 
 from .base import (
     AttackTechnique,
@@ -31,7 +35,12 @@ from .base import (
 )
 
 PROHIBITED_NSE_CATEGORIES = frozenset({"intrusive", "exploit", "dos", "brute"})
-ALLOWED_NSE_CATEGORIES = frozenset({"safe", "default", "discovery", "version", "vuln"})
+# Allow-list of NSE categories/scripts Phase I may emit. This is an ALLOW-list:
+# any --script token outside this set is refused. "vulners" is the specific
+# read-only CVE-lookup script the adapter itself emits for vuln-intent scans.
+ALLOWED_NSE_CATEGORIES = frozenset(
+    {"safe", "default", "discovery", "version", "vuln", "vulners"}
+)
 
 CIDR_RE = re.compile(r"^[0-9A-Fa-f:.]+/\d{1,3}$")
 HOST_RE = re.compile(r"^[0-9A-Fa-f:.]+$|^[A-Za-z0-9.\-]+$")
@@ -54,11 +63,13 @@ class NmapAdapter(CommandAdapter):
         binary: str = "nmap",
         timeout_seconds: int = 600,
         scratch_dir: Path | None = None,
+        review_queue: "ReviewQueue | None" = None,
     ) -> None:
         self._binary = binary
         self._timeout = timeout_seconds
         self._scratch = scratch_dir or Path(tempfile.gettempdir()) / "oubliette_warden_nmap"
         self._scratch.mkdir(parents=True, exist_ok=True)
+        self._review_queue = review_queue
 
     # ---------- adapter contract ----------
 
@@ -105,17 +116,20 @@ class NmapAdapter(CommandAdapter):
 
     def execute(self, command: Command, env: ExecutionEnv) -> Finding:
         self._enforce_phase1_policy(command, env)
+        # The advertised five-stage safety gate is authoritative: refuse to
+        # execute unless it APPROVEs (ESCALATE requires operator sign-off).
+        self._gate_or_raise(command, env, NmapPolicyError)
         if not self.is_available():
             raise NmapPolicyError("nmap binary not available on this host")
 
-        proc = subprocess.run(  # noqa: S603 — argv-form, no shell, validated targets
+        proc = subprocess.run(
             command.argv,
             capture_output=True,
             text=True,
             timeout=self._timeout,
             check=False,
         )
-        xml_path = self._scratch / f"nmap_{abs(hash(tuple(command.argv)))}.xml"
+        xml_path = self._scratch_path(command.argv)
         xml_path.write_text(proc.stdout, encoding="utf-8")
         parsed = self._parse_xml(proc.stdout)
         cves = sorted({c for h in parsed.get("hosts", []) for c in h.get("cves", [])})
@@ -131,6 +145,15 @@ class NmapAdapter(CommandAdapter):
 
     # ---------- helpers (unit-tested) ----------
 
+    def _scratch_path(self, argv: list[str]) -> Path:
+        """Unique XML scratch path per invocation.
+
+        A hash of argv alone collides for identical scans, clobbering the
+        previous run's raw output and corrupting the audit/replay trail. A
+        uuid4 suffix guarantees each invocation keeps its own artifact.
+        """
+        return self._scratch / f"nmap_{uuid.uuid4().hex}.xml"
+
     @staticmethod
     def _validate_targets(scope: list[str]) -> list[str]:
         if not scope:
@@ -140,6 +163,11 @@ class NmapAdapter(CommandAdapter):
             t = raw.strip()
             if not t:
                 continue
+            # A token starting with '-' would be parsed by nmap as an option,
+            # not a target — e.g. a crafted "--script" target could inject a
+            # second NSE selector into argv. Reject before it reaches argv.
+            if t.startswith("-"):
+                raise NmapTargetError(f"target may not start with '-': {t!r}")
             if CIDR_RE.match(t):
                 try:
                     ipaddress.ip_network(t, strict=False)
@@ -162,14 +190,26 @@ class NmapAdapter(CommandAdapter):
             )
         if command.is_impact_class():
             raise NmapPolicyError("Impact-tactic commands are not permitted in Phase I")
-        if "--script" in command.argv:
-            idx = command.argv.index("--script")
-            scripts = command.argv[idx + 1] if idx + 1 < len(command.argv) else ""
-            for cat in scripts.split(","):
-                cat = cat.strip().lower()
+        # Inspect EVERY --script occurrence (not just the first) and enforce
+        # ALLOWED_NSE_CATEGORIES as an allow-list: anything not explicitly
+        # permitted is rejected, so categories like fuzzer/malware/external/
+        # auth/broadcast can never slip through.
+        argv = command.argv
+        for idx, tok in enumerate(argv):
+            if tok != "--script":
+                continue
+            scripts = argv[idx + 1] if idx + 1 < len(argv) else ""
+            for raw_cat in scripts.split(","):
+                cat = raw_cat.strip().lower()
+                if not cat:
+                    continue
                 if cat in PROHIBITED_NSE_CATEGORIES:
                     raise NmapPolicyError(
                         f"NSE category {cat!r} is prohibited in Phase I"
+                    )
+                if cat not in ALLOWED_NSE_CATEGORIES:
+                    raise NmapPolicyError(
+                        f"NSE category {cat!r} is not in the Phase I allow-list"
                     )
 
     @staticmethod

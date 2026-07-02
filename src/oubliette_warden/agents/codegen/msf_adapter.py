@@ -24,7 +24,10 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from oubliette_warden.operator_ui.review_queue import ReviewQueue
 
 from .base import (
     AttackTechnique,
@@ -107,9 +110,11 @@ class MSFAuxAdapter(CommandAdapter):
         self,
         client: MSFRPCClient | None = None,
         default_module: str = "auxiliary/scanner/portscan/tcp",
+        review_queue: "ReviewQueue | None" = None,
     ) -> None:
         self._client = client
         self._default_module = default_module
+        self._review_queue = review_queue
         self._validate_module(default_module)
 
     # ---------- adapter contract ----------
@@ -149,6 +154,9 @@ class MSFAuxAdapter(CommandAdapter):
 
     def execute(self, command: Command, env: ExecutionEnv) -> Finding:
         self._enforce_phase1_policy(command, env)
+        # The advertised five-stage safety gate is authoritative: refuse to
+        # execute unless it APPROVEs (ESCALATE requires operator sign-off).
+        self._gate_or_raise(command, env, MSFPolicyError)
         if self._client is None:
             raise MSFPolicyError("msfrpcd client not configured")
 
