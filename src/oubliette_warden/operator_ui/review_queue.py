@@ -45,6 +45,7 @@ class PendingReview:
     reasoning_chain: list[str]
     proposed_at: str
     payload: dict[str, Any] = field(default_factory=dict)
+    dedup_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,9 @@ class ReviewQueue:
         self._pending: dict[str, PendingReview] = {}
         self._decisions: dict[str, ReviewDecision] = {}
         self._audit: list[dict[str, Any]] = []
+        # review_id -> dedup_key, so a decision can be correlated back to the
+        # command that requested review.
+        self._keys: dict[str, str] = {}
         self._clock = clock or (lambda: datetime.now(timezone.utc).isoformat())
         self._mint_id = id_factory or (lambda: f"rv-{uuid.uuid4().hex[:8]}")
 
@@ -86,6 +90,7 @@ class ReviewQueue:
         summary: str,
         reasoning_chain: list[str],
         payload: dict[str, Any] | None = None,
+        dedup_key: str | None = None,
     ) -> PendingReview:
         with self._lock:
             review = PendingReview(
@@ -96,8 +101,11 @@ class ReviewQueue:
                 reasoning_chain=list(reasoning_chain),
                 proposed_at=self._clock(),
                 payload=dict(payload or {}),
+                dedup_key=dedup_key,
             )
             self._pending[review.review_id] = review
+            if dedup_key is not None:
+                self._keys[review.review_id] = dedup_key
             self._audit.append(
                 {
                     "kind": "enqueue",
@@ -185,6 +193,29 @@ class ReviewQueue:
                 }
             )
             return decision
+
+    # ----- approval lookup -----
+
+    def is_key_approved(self, dedup_key: str) -> bool:
+        """True if any review carrying ``dedup_key`` was decided APPROVE.
+
+        Lets a caller (e.g. a CommandAdapter) correlate an operator's APPROVE
+        back to the specific command that was escalated, so execution only
+        proceeds once that command has been explicitly cleared.
+        """
+        with self._lock:
+            for review_id, decision in self._decisions.items():
+                if (
+                    decision.verdict == ReviewVerdict.APPROVE
+                    and self._keys.get(review_id) == dedup_key
+                ):
+                    return True
+            return False
+
+    def has_pending_key(self, dedup_key: str) -> bool:
+        """True if a still-pending review carries ``dedup_key``."""
+        with self._lock:
+            return any(r.dedup_key == dedup_key for r in self._pending.values())
 
     # ----- audit / replay -----
 

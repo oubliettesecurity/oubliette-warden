@@ -191,6 +191,60 @@ def test_corroboration_passes_with_two_sources():
 # ---------- audit-log binding ----------
 
 
+# ---------- LOW: path-prefix spoofing via startswith ----------
+
+
+def test_same_domain_path_prefix_spoof_rejected():
+    """A URL sharing a prefix but on a different path must be rejected.
+
+    ``https://www.cisa.gov/known-exploited-vulnerabilities-catalog`` lacks a
+    trailing slash; a naive startswith accepts
+    ``...-catalog-evil.example/phish``.
+    """
+    spoof = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog-evil/phish"
+    rec = CorpusRecord(
+        cve_id="CVE-2017-0144",
+        description="x",
+        cvss_severity="HIGH",
+        references=[spoof],
+    )
+    g = IntegrityGuard()
+    cit = Citation(cve_id="CVE-2017-0144", url=spoof)
+    report = g.check("see CVE-2017-0144 (" + spoof + ")", [rec], [cit])
+    assert not report.accepted
+    assert any("accepted source prefixes" in r for r in report.rejected_reasons)
+
+
+def test_cross_domain_prefix_spoof_rejected():
+    """netloc must match exactly, not merely be a prefix of the string."""
+    spoof = "https://nvd.nist.gov.evil.example/vuln/detail/CVE-2017-0144"
+    rec = CorpusRecord(
+        cve_id="CVE-2017-0144",
+        description="x",
+        cvss_severity="HIGH",
+        references=[spoof],
+    )
+    g = IntegrityGuard()
+    cit = Citation(cve_id="CVE-2017-0144", url=spoof)
+    report = g.check("see CVE-2017-0144 (" + spoof + ")", [rec], [cit])
+    assert not report.accepted
+    assert any("accepted source prefixes" in r for r in report.rejected_reasons)
+
+
+def test_legit_path_under_prefix_still_accepted():
+    url = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog/CVE-2017-0144"
+    rec = CorpusRecord(
+        cve_id="CVE-2017-0144",
+        description="x",
+        cvss_severity="HIGH",
+        references=[url],
+    )
+    g = IntegrityGuard()
+    cit = Citation(cve_id="CVE-2017-0144", url=url)
+    report = g.check("see CVE-2017-0144 (" + url + ")", [rec], [cit])
+    assert report.accepted, report.rejected_reasons
+
+
 def test_audit_trail_present_on_accept_and_reject():
     g = IntegrityGuard()
     accept = g.check(

@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 # CVE identifier shape per https://cve.mitre.org/cve/identifiers/syntaxchange.html.
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}")
@@ -132,6 +133,13 @@ class IntegrityGuard:
             if accepted_prefixes is not None
             else tuple(ACCEPTED_SOURCE_PREFIXES)
         )
+        # Pre-parse each prefix into (scheme, netloc, path) so matching compares
+        # origin exactly and treats the path as a slash-terminated boundary —
+        # a bare ``startswith`` lets a same-domain path-prefix or a
+        # look-alike netloc spoof the allow-list.
+        self._parsed_prefixes = tuple(
+            _split_prefix(p) for p in self._accepted_prefixes
+        )
         self._require_corroboration = require_corroboration
 
     def check(
@@ -171,7 +179,7 @@ class IntegrityGuard:
             if not c.is_well_formed():
                 reasons.append(f"malformed citation: {c}")
                 continue
-            if not c.url.startswith(self._accepted_prefixes):
+            if not _url_allowed(c.url, self._parsed_prefixes):
                 reasons.append(
                     f"citation url not in accepted source prefixes (R3): {c.url}"
                 )
@@ -201,6 +209,32 @@ class IntegrityGuard:
 
 
 # ----- helpers ---------------------------------------------------------------
+
+
+def _split_prefix(prefix: str) -> tuple[str, str, str]:
+    """Parse an accepted-source prefix into (scheme, netloc, path)."""
+    parts = urlsplit(prefix)
+    return parts.scheme.lower(), parts.netloc.lower(), parts.path
+
+
+def _url_allowed(url: str, parsed_prefixes: Sequence[tuple[str, str, str]]) -> bool:
+    """True iff ``url`` matches an accepted prefix by origin + path boundary.
+
+    Origin (scheme + netloc) must match exactly. The path must equal the
+    prefix path or sit beneath it on a ``/`` boundary, so
+    ``.../catalog-evil/phish`` no longer passes for a ``.../catalog`` prefix.
+    """
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    path = parts.path
+    for p_scheme, p_netloc, p_path in parsed_prefixes:
+        if scheme != p_scheme or netloc != p_netloc:
+            continue
+        base = p_path.rstrip("/")
+        if base == "" or path == base or path.startswith(base + "/"):
+            return True
+    return False
 
 
 def _source_of(url: str) -> str:

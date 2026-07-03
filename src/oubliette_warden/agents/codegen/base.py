@@ -95,6 +95,11 @@ class CommandAdapter(ABC):
     name: str = ""
     version: str = "0.0.0"
 
+    # Optional operator review queue. When set, ESCALATE verdicts from the
+    # safety gate are routed here and block execution until an operator records
+    # an APPROVE for the specific command. Adapters set this in __init__.
+    _review_queue: Any = None
+
     @abstractmethod
     def is_available(self) -> bool:
         """Return True if the underlying tool binary is present and runnable."""
@@ -106,6 +111,63 @@ class CommandAdapter(ABC):
     @abstractmethod
     def execute(self, command: Command, env: ExecutionEnv) -> Finding:
         """Execute a Command in the given environment and return a Finding."""
+
+    # ---------- shared safety-gate enforcement ----------
+
+    @staticmethod
+    def _command_key(command: Command, env: ExecutionEnv) -> str:
+        """Stable content hash correlating a command to its review record."""
+        import hashlib
+        import json
+
+        blob = json.dumps(
+            {"adapter": command.adapter_name, "argv": command.argv, "env": env.value},
+            sort_keys=True,
+        )
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    def _gate_or_raise(
+        self,
+        command: Command,
+        env: ExecutionEnv,
+        error_cls: type[Exception],
+    ) -> None:
+        """Run the advertised 5-stage safety gate and enforce its verdict.
+
+        APPROVE   -> return (caller proceeds to execute)
+        DENY      -> raise ``error_cls`` (never execute)
+        ESCALATE  -> execute only if an operator APPROVE is already recorded
+                     for this command; otherwise enqueue a review (if a queue
+                     is configured) and raise ``error_cls`` to block.
+        """
+        # Local import avoids a base<->safety_gate import cycle.
+        from . import safety_gate
+
+        decision = safety_gate.evaluate(command, env)
+        if decision.final == safety_gate.Verdict.APPROVE:
+            return
+        if decision.final == safety_gate.Verdict.DENY:
+            raise error_cls(
+                "safety gate DENY: " + "; ".join(decision.reasons())
+            )
+
+        # ESCALATE — require an explicit operator approval for this command.
+        key = self._command_key(command, env)
+        rq = self._review_queue
+        if rq is not None and rq.is_key_approved(key):
+            return
+        if rq is not None and not rq.has_pending_key(key):
+            rq.enqueue(
+                proposing_agent=self.name,
+                action_kind="execute",
+                summary=command.rationale,
+                reasoning_chain=decision.reasons(),
+                payload={"argv": list(command.argv), "env": env.value},
+                dedup_key=key,
+            )
+        raise error_cls(
+            "safety gate ESCALATE: execution blocked pending operator approval"
+        )
 
     def describe(self) -> dict[str, Any]:
         return {

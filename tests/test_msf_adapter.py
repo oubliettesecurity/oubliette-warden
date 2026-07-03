@@ -18,6 +18,10 @@ from oubliette_warden.agents.codegen.msf_adapter import (  # noqa: E402
 from oubliette_warden.agents.codegen.safety_gate import Verdict, evaluate  # noqa: E402
 
 
+from oubliette_warden.agents.codegen.base import AttackTechnique, Command
+from oubliette_warden.operator_ui.review_queue import ReviewQueue, ReviewVerdict
+
+
 class FakeMSFClient:
     """Minimal fake msfrpcd client for unit tests."""
 
@@ -164,3 +168,54 @@ def test_argv_shape_includes_module_and_rhosts():
     assert cmd.argv[1] == "run"
     assert cmd.argv[2].startswith("auxiliary/scanner/")
     assert any(a.startswith("RHOSTS=") for a in cmd.argv[3:])
+
+
+# ---------- CRITICAL: safety_gate.evaluate() is enforced on execute ----------
+
+
+def test_execute_refuses_command_the_gate_denies():
+    """A gate-DENYing command must never reach the RPC client."""
+    client = FakeMSFClient()
+    a = MSFAuxAdapter(client=client)
+    # Valid auxiliary module (passes _enforce_phase1_policy), but the gate's
+    # pattern_detector DENYs the 'shutdown' token.
+    cmd = Command(
+        adapter_name="msf-aux",
+        argv=["msf-aux", "run", "auxiliary/scanner/portscan/tcp", "RHOSTS=10.0.0.1", "shutdown"],
+        target_scope=["10.0.0.1"],
+        attck_tactics=[AttackTechnique.RECONNAISSANCE],
+        attck_technique_ids=["T1595"],
+        is_active_probe=True,
+        expected_runtime_seconds=60,
+        rationale="test",
+    )
+    with pytest.raises(MSFPolicyError, match="gate"):
+        a.execute(cmd, ExecutionEnv.CALDERA_ONLY)
+    assert client.run_calls == []
+
+
+def test_execute_escalate_blocks_until_operator_approval():
+    rq = ReviewQueue()
+    client = FakeMSFClient(rows=[{"host": "10.0.0.1", "info": "x"}])
+    a = MSFAuxAdapter(client=client, review_queue=rq)
+    # runtime > 1800 -> mcp_guard ESCALATE.
+    cmd = Command(
+        adapter_name="msf-aux",
+        argv=["msf-aux", "run", "auxiliary/scanner/portscan/tcp", "RHOSTS=10.0.0.1"],
+        target_scope=["10.0.0.1"],
+        attck_tactics=[AttackTechnique.RECONNAISSANCE],
+        attck_technique_ids=["T1046"],
+        is_active_probe=True,
+        expected_runtime_seconds=3600,
+        rationale="long scan",
+    )
+    with pytest.raises(MSFPolicyError, match="operator"):
+        a.execute(cmd, ExecutionEnv.CALDERA_ONLY)
+    assert client.run_calls == []
+    pending = rq.list_pending()
+    assert len(pending) == 1
+
+    rq.decide(pending[0].review_id, verdict=ReviewVerdict.APPROVE, operator_id="op-1")
+    finding = a.execute(cmd, ExecutionEnv.CALDERA_ONLY)
+    assert len(client.run_calls) == 1
+    assert finding.adapter_name == "msf-aux"
