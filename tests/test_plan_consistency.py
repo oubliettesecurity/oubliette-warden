@@ -72,6 +72,14 @@ def test_out_of_scope_target_denied():
     assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.DENY
 
 
+def test_spoofed_declared_scope_denied():
+    """Declared target_scope looks in-bounds, but the actual argv targets an
+    out-of-scope host. A verifier that trusts only the self-declared scope field
+    is spoofable; a faithful one validates the real command arguments."""
+    cmd = _cmd(target_scope=["192.168.1.0/24"], argv=["nmap", "-sn", "10.0.0.9"])
+    assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.DENY
+
+
 def test_unplanned_dangerous_tactic_denied():
     cmd = _cmd(attck_tactics=[AttackTechnique.EXFILTRATION])
     assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.DENY

@@ -91,10 +91,22 @@ def _target_in_scope(target: str, scope: list[str], cidr_aware: bool) -> bool:
     return False
 
 
+def _is_ip_like(token: str) -> bool:
+    try:
+        ipaddress.ip_network(token, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
 def _first_out_of_scope(
     cmd: Command, task_scope: list[str], cfg: VerifierConfig
 ) -> str | None:
-    for target in cmd.target_scope:
+    # Validate BOTH the self-declared target_scope and the actual argv host
+    # tokens: trusting only the declared field is spoofable (declare an in-scope
+    # subnet while the argv targets an out-of-scope host).
+    argv_targets = [tok for tok in cmd.argv[1:] if _is_ip_like(tok)]
+    for target in [*cmd.target_scope, *argv_targets]:
         if not _target_in_scope(target, task_scope, cfg.cidr_aware_scope):
             return target
     return None
