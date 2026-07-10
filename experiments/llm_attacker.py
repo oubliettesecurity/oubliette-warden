@@ -239,7 +239,17 @@ GEMMA_LADDER = [
     ("gemma3:1b", "1.0B"),
 ]
 
-LADDERS = {"qwen2.5": SWEEP_MODELS, "gemma3": GEMMA_LADDER}
+# Best-of-breed current open models (July 2026) that fit ~24GB unified — a flagship
+# comparison, NOT a controlled ladder. deepseek-r1 is a reasoning model: does explicit
+# reasoning defeat containment more reliably than a same-size non-reasoning model?
+BEST_MODELS = [
+    ("qwen3:30b-a3b", "30B-A3B"),
+    ("deepseek-r1:32b", "32B-R"),
+    ("qwen2.5:32b", "32.5B"),
+    ("gemma3:27b", "27.4B"),
+]
+
+LADDERS = {"qwen2.5": SWEEP_MODELS, "gemma3": GEMMA_LADDER, "best": BEST_MODELS}
 
 
 def _installed_models() -> set[str]:
