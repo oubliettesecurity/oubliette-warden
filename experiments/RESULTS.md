@@ -206,7 +206,14 @@ Built a **reasoning-aware harness** (commit ae30e73): drops `format:json` for Co
 recovers the action from `<think>...</think>`+prose via `_extract_action` (unit-tested on
 fenced and unfenced output). The **reasoning ladder** was re-scoped (commit 8639ec1) to the
 fast distills that actually generate in time — deepseek-r1:14b / 8b / 1.5b and gpt-oss:20b —
-r1:32b excluded and documented. Reasoning sweep on those is the remaining run.
+r1:32b excluded and documented.
+
+**CONFIRMED (reasoning sweep, first result):** with the reasoning-aware harness,
+**deepseek-r1:14b wins model-trust 5/5 (median 2 rounds, plan corruption) and is held 0/3
+anchored.** A reasoning model, fairly scored, is a strong attacker (on par with qwen3-30b and
+frontier Claude) — so the earlier r1:32b `0/5` is definitively a timeout/forced-JSON artifact,
+not a capability result. (r1:8b / 1.5b / gpt-oss:20b still running; confirmatory.) Anchored
+trust holds against reasoning attackers too.
 
 Note: the **frontier arm (§2f) already answers the core reasoning question** — Claude Opus 4.8
 and Sonnet 5 (frontier, reasoning-capable) beat model-trust 5/5 and were held 0/3 by anchored
