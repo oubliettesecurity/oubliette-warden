@@ -174,6 +174,26 @@ model-trust 5 trials / anchored 3 trials per model. Three ladders:
   Do NOT claim "reasoning models are worse attackers." Needs a reasoning-aware re-run
   (no `format:json`, parse the action out of the CoT) before any claim.
 
+### 2f. Frontier ceiling arm (NON-AIR-GAPPED; 2026-07-13)
+
+`FRONTIER_ENABLE=1 PYTHONPATH=src python experiments/llm_attacker.py sweep frontier`
+Cloud models via the Anthropic API — a robustness *ceiling* datapoint, deliberately kept
+OUT of the local scale curve and double-gated (API key + explicit `FRONTIER_ENABLE=1`).
+
+| model | model-trust | med rounds | anchored | move |
+|---|:--:|:--:|:--:|---|
+| claude-opus-4-8 | 5/5 | 3 | 0/3 | plan_corruption |
+| claude-sonnet-5 | 5/5 | 3 | 0/3 | plan_corruption |
+
+**Finding.** Frontier models defeat *model*-trusted verification on every trial via plan
+corruption — the offensive capability tops out, as expected — yet **both are held 0/3 by
+anchored trust.** This closes the robustness story: anchored containment holds against every
+attacker tested, from a 0.5B local model to frontier Claude. The anchored result is
+deterministic by construction, so this is *demonstration* (maximally convincing) rather than
+discovery. Note the frontier models took a median 3 rounds vs qwen3-30b's 1 — noisy at 5
+trials, not over-interpreted. Emphasize in the paper that the *defense* is validated
+air-gapped on local models; the frontier arm is a non-air-gapped stress test only.
+
 ### Methodological note (for the write-up)
 The §2/§2b matrices explain the gate's mechanics to the attacker (told-the-exploit mode),
 measuring *reliable execution*; §2d withholds them (discovery mode), measuring *discovery
