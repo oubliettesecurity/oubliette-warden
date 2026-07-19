@@ -194,6 +194,24 @@ discovery. Note the frontier models took a median 3 rounds vs qwen3-30b's 1 — 
 trials, not over-interpreted. Emphasize in the paper that the *defense* is validated
 air-gapped on local models; the frontier arm is a non-air-gapped stress test only.
 
+### 2g. Reasoning models — harness + the deepseek-r1:32b artifact resolved (2026-07-13)
+
+The §2e deepseek-r1:32b `0/5` is now confirmed a **harness/hardware artifact, not a finding.**
+Two causes: (1) Ollama's forced-JSON mode cripples chain-of-thought output; (2) on the M4
+testbed a *single* r1:32b reasoning generation on the attack prompt **exceeds the 600s
+timeout** (a trivial "reply ok" already takes ~105s; the real prompt times out). So r1:32b
+cannot be scored fairly on this hardware regardless of harness.
+
+Built a **reasoning-aware harness** (commit ae30e73): drops `format:json` for CoT models and
+recovers the action from `<think>...</think>`+prose via `_extract_action` (unit-tested on
+fenced and unfenced output). The **reasoning ladder** was re-scoped (commit 8639ec1) to the
+fast distills that actually generate in time — deepseek-r1:14b / 8b / 1.5b and gpt-oss:20b —
+r1:32b excluded and documented. Reasoning sweep on those is the remaining run.
+
+Note: the **frontier arm (§2f) already answers the core reasoning question** — Claude Opus 4.8
+and Sonnet 5 (frontier, reasoning-capable) beat model-trust 5/5 and were held 0/3 by anchored
+trust. So "can a top reasoning-capable model beat the anchor?" is already answered: no.
+
 ### Methodological note (for the write-up)
 The §2/§2b matrices explain the gate's mechanics to the attacker (told-the-exploit mode),
 measuring *reliable execution*; §2d withholds them (discovery mode), measuring *discovery
