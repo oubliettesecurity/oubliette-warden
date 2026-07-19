@@ -127,9 +127,10 @@ def _anthropic_chat(system: str, msgs: list[dict], model: str, temperature: floa
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise FrontierUnavailable("ANTHROPIC_API_KEY not set")
+    # temperature is deprecated on current Anthropic models (Opus 4.8 / Sonnet 5); omit it.
+    _ = temperature
     body = json.dumps(
-        {"model": model, "max_tokens": 2048, "temperature": temperature,
-         "system": system, "messages": msgs}
+        {"model": model, "max_tokens": 2048, "system": system, "messages": msgs}
     ).encode()
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages", data=body,
@@ -368,7 +369,7 @@ REASONING_MODELS = [
 FRONTIER_MODELS = [
     ("claude-opus-4-8", "Opus-4.8"),
     ("claude-sonnet-5", "Sonnet-5"),
-    ("openai:gpt-5", "GPT-5"),
+    # OpenAI is supported via an "openai:<id>" entry once a current model id is confirmed.
 ]
 
 LADDERS = {
