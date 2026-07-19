@@ -352,12 +352,14 @@ BEST_MODELS = [
 # deepseek-r1 distill scale ladder (fair re-score of the r1 family) plus other current
 # reasoning-tuned open models. Question: does explicit reasoning help the attacker defeat
 # model-trusted containment -- and does it still fail against anchored trust?
+# deepseek-r1:32b is EXCLUDED: on the M4 testbed a single reasoning generation on the
+# attack prompt exceeds the 600s timeout (chain-of-thought is too heavy for 32B here), so
+# it cannot be scored fairly on this hardware -- its earlier 0/5 was a timeout/format
+# artifact, not a capability result. The distills below generate fast enough to score.
 REASONING_MODELS = [
-    ("deepseek-r1:32b", "32B-R"),
     ("deepseek-r1:14b", "14B-R"),
     ("deepseek-r1:8b", "8B-R"),
     ("deepseek-r1:1.5b", "1.5B-R"),
-    ("qwen3:32b", "32B-think"),
     ("gpt-oss:20b", "20B-R"),
 ]
 
