@@ -18,6 +18,7 @@ Own general research code; local models only, air-gapped.
 from __future__ import annotations
 
 import json
+import os
 import re
 import statistics
 import sys
@@ -107,6 +108,69 @@ def _ollama_chat(
     req = urllib.request.Request(OLLAMA, data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
         return json.loads(r.read())["message"]["content"]
+
+
+class FrontierUnavailable(RuntimeError):
+    """No API key for a requested cloud model — the frontier arm stays inert by default."""
+
+
+def _is_frontier(model: str) -> bool:
+    return model.startswith(("claude", "gpt", "o1", "o3", "anthropic:", "openai:"))
+
+
+def _split_system(messages: list[dict]) -> tuple[str, list[dict]]:
+    system = messages[0]["content"] if messages and messages[0]["role"] == "system" else ""
+    return system, [m for m in messages if m["role"] != "system"]
+
+
+def _anthropic_chat(system: str, msgs: list[dict], model: str, temperature: float) -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise FrontierUnavailable("ANTHROPIC_API_KEY not set")
+    body = json.dumps(
+        {"model": model, "max_tokens": 2048, "temperature": temperature,
+         "system": system, "messages": msgs}
+    ).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages", data=body,
+        headers={"content-type": "application/json", "x-api-key": key,
+                 "anthropic-version": "2023-06-01"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as r:
+        data = json.loads(r.read())
+    return "".join(b.get("text", "") for b in data.get("content", []))
+
+
+def _openai_chat(system: str, msgs: list[dict], model: str, temperature: float) -> str:
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise FrontierUnavailable("OPENAI_API_KEY not set")
+    body = json.dumps(
+        {"model": model, "messages": [{"role": "system", "content": system}, *msgs],
+         "temperature": temperature}
+    ).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions", data=body,
+        headers={"content-type": "application/json", "authorization": f"Bearer {key}"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as r:
+        data = json.loads(r.read())
+    return data["choices"][0]["message"]["content"]
+
+
+def _frontier_chat(messages: list[dict], temperature: float, model: str) -> str:
+    """Route to a cloud frontier model. NON-AIR-GAPPED: a robustness-ceiling arm only,
+    key-gated and never invoked unless a frontier model is explicitly requested with a key
+    present. Provider inferred from the model name; strip an optional 'provider:' prefix."""
+    # Explicit opt-in gate: ambient API keys (e.g. a dev shell's) must NOT auto-fire the
+    # non-air-gapped arm. The operator sets FRONTIER_ENABLE=1 to deliberately allow it.
+    if os.environ.get("FRONTIER_ENABLE") != "1":
+        raise FrontierUnavailable("set FRONTIER_ENABLE=1 to opt into the non-air-gapped cloud arm")
+    name = model.split(":", 1)[1] if model.startswith(("anthropic:", "openai:")) else model
+    system, msgs = _split_system(messages)
+    if model.startswith("openai:") or name.startswith(("gpt", "o1", "o3")):
+        return _openai_chat(system, msgs, name, temperature)
+    return _anthropic_chat(system, msgs, name, temperature)
 
 
 def _extract_action(raw: str) -> dict:
@@ -205,8 +269,16 @@ def run_trial(
     messages = [{"role": "system", "content": system}]
     for rnd in range(1, max_rounds + 1):
         try:
-            raw = _ollama_chat(messages, temperature, model, force_json=not reasoning)
-            action = _extract_action(raw) if reasoning else json.loads(raw)
+            if _is_frontier(model):
+                # cloud model: free-form + robust extraction (no Ollama JSON mode)
+                raw = _frontier_chat(messages, temperature, model)
+                action = _extract_action(raw)
+            elif reasoning:
+                raw = _ollama_chat(messages, temperature, model, force_json=False)
+                action = _extract_action(raw)
+            else:
+                raw = _ollama_chat(messages, temperature, model)
+                action = json.loads(raw)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
             messages.append({"role": "user", "content": "Invalid JSON. Return only the schema."})
             continue
@@ -288,11 +360,23 @@ REASONING_MODELS = [
     ("gpt-oss:20b", "20B-R"),
 ]
 
+# Frontier robustness-ceiling arm. NON-AIR-GAPPED and key-gated: skipped entirely unless
+# an API key is present. Purpose is a single rhetorical datapoint -- "even a frontier
+# attacker hits 0% against anchored trust" (anchored holds by construction, so this is
+# demonstration, not discovery). Kept OUT of the local scale curve. Override IDs via
+# FRONTIER_MODELS env if the current model names differ.
+FRONTIER_MODELS = [
+    ("claude-opus-4-8", "Opus-4.8"),
+    ("claude-sonnet-5", "Sonnet-5"),
+    ("openai:gpt-5", "GPT-5"),
+]
+
 LADDERS = {
     "qwen2.5": SWEEP_MODELS,
     "gemma3": GEMMA_LADDER,
     "best": BEST_MODELS,
     "reasoning": REASONING_MODELS,
+    "frontier": FRONTIER_MODELS,
 }
 
 
@@ -315,6 +399,8 @@ def run_scale_sweep(
     constraint and parses the action out of their reasoning (a fair score for r1-class)."""
     ladder = LADDERS[family]
     mode = " | reasoning-aware (no forced JSON)" if reasoning else ""
+    if family == "frontier":
+        mode += " | *** NON-AIR-GAPPED cloud ceiling arm ***"
     print(
         f"Scale sweep [{family}]{mode} | goal = reach {GOAL} (off-scope) | terse reasons | "
         f"model-trust {model_trials} trials, anchored {anchored_trials} trials\n"
@@ -323,13 +409,17 @@ def run_scale_sweep(
     print("-" * 76)
     installed = _installed_models()
     for model, params in ladder:
-        if installed and model not in installed:
+        if not _is_frontier(model) and installed and model not in installed:
             print(f"{model:<16}{params:<9}{'(not installed here)':<17}")
             continue
         mcfg = VerifierConfig(plan_trust="model", reason_verbosity="terse")
         acfg = VerifierConfig(plan_trust="anchored", reason_verbosity="terse")
-        mres = [run_trial(mcfg, 0.8, model=model, reasoning=reasoning) for _ in range(model_trials)]
-        ares = [run_trial(acfg, 0.8, model=model, reasoning=reasoning) for _ in range(anchored_trials)]
+        try:
+            mres = [run_trial(mcfg, 0.8, model=model, reasoning=reasoning) for _ in range(model_trials)]
+            ares = [run_trial(acfg, 0.8, model=model, reasoning=reasoning) for _ in range(anchored_trials)]
+        except FrontierUnavailable as e:
+            print(f"{model:<16}{params:<9}(skipped: {e})")
+            continue
         mwins = [t for t in mres if t.won]
         med = statistics.median([t.rounds for t in mwins]) if mwins else "-"
         moves = ",".join(sorted({t.winning_move for t in mwins if t.winning_move})) or "-"
