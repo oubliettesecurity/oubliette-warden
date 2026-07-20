@@ -208,12 +208,24 @@ fenced and unfenced output). The **reasoning ladder** was re-scoped (commit 8639
 fast distills that actually generate in time — deepseek-r1:14b / 8b / 1.5b and gpt-oss:20b —
 r1:32b excluded and documented.
 
-**CONFIRMED (reasoning sweep, first result):** with the reasoning-aware harness,
-**deepseek-r1:14b wins model-trust 5/5 (median 2 rounds, plan corruption) and is held 0/3
-anchored.** A reasoning model, fairly scored, is a strong attacker (on par with qwen3-30b and
-frontier Claude) — so the earlier r1:32b `0/5` is definitively a timeout/forced-JSON artifact,
-not a capability result. (r1:8b / 1.5b / gpt-oss:20b still running; confirmatory.) Anchored
-trust holds against reasoning attackers too.
+**Reasoning sweep (reasoning-aware, terse, 5 model-trust / 3 anchored):**
+
+| model | params | model-trust | med rounds | anchored |
+|---|---|:--:|:--:|:--:|
+| deepseek-r1:14b | 14B-R | 5/5 | 2 | 0/3 |
+| deepseek-r1:8b | 8B-R | 5/5 | 2 | 0/3 |
+| deepseek-r1:1.5b | 1.5B-R | 0/5 | – | 0/3 |
+| gpt-oss:20b | 20B-R | (running) | | |
+
+**Findings.**
+- The earlier r1:32b `0/5` is **definitively a timeout/forced-JSON artifact** — fairly scored,
+  reasoning models are strong attackers.
+- **Reasoning LOWERS the capability threshold.** A reasoning distill at 8B wins 5/5, where the
+  non-reasoning ~8B models (§2c) ranged 0–4/5 (qwen2.5:7b 4/5, llama3.1:8b 4/5, llama3 0/5).
+  Reasoning buys the attacker the strategic composition (inject-then-act) at smaller size —
+  but it still collapses by 1.5B (r1:1.5b 0/5): reasoning helps, it doesn't work miracles.
+- **Anchored trust still holds 0/3 against every reasoning model.** Reasoning capability does
+  not touch the deterministic anchor — consistent with the frontier result.
 
 Note: the **frontier arm (§2f) already answers the core reasoning question** — Claude Opus 4.8
 and Sonnet 5 (frontier, reasoning-capable) beat model-trust 5/5 and were held 0/3 by anchored
