@@ -232,6 +232,21 @@ Note: the **frontier arm (§2f) already answers the core reasoning question** �
 and Sonnet 5 (frontier, reasoning-capable) beat model-trust 5/5 and were held 0/3 by anchored
 trust. So "can a top reasoning-capable model beat the anchor?" is already answered: no.
 
+### 2h. Consolidated robustness bound (the paper's headline number)
+
+Pooling every anchored-trust trial across the flagship, frontier, and reasoning sweeps
+(§2e qwen2.5 18 + gemma3 12 + best-of-breed 12; §2f frontier 6; §2g reasoning 12):
+
+> **0 attacker wins in 60 anchored-trust trials across 20 model configurations** — spanning
+> five model families, 0.5B to frontier Claude, and reasoning-tuned attackers — while those
+> same attackers defeat *model*-trusted verification up to 5/5. **95% Wilson CI on the anchored
+> attack-success rate: [0, 0.060].**
+
+The sweep code now prints per-model 95% Wilson CIs and this pooled anchored bound automatically
+(`_wilson_ci`, commit 3221e1f). Per-model model-trust rates remain coarse at 5 trials — a
+15-trial qwen2.5 re-run to tighten them is the only remaining polish; it does not affect the
+threshold or the anchored bound.
+
 ### Methodological note (for the write-up)
 The §2/§2b matrices explain the gate's mechanics to the attacker (told-the-exploit mode),
 measuring *reliable execution*; §2d withholds them (discovery mode), measuring *discovery
