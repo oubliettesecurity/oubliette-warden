@@ -115,7 +115,11 @@ class FrontierUnavailable(RuntimeError):
 
 
 def _is_frontier(model: str) -> bool:
-    return model.startswith(("claude", "gpt", "o1", "o3", "anthropic:", "openai:"))
+    # Cloud models only. NOTE: "gpt-oss" is a LOCAL open-weight model, not an OpenAI cloud
+    # model -- match "gpt-<digit>" (gpt-4/gpt-5) but never gpt-oss.
+    if model.startswith(("anthropic:", "openai:", "claude", "o1-", "o3-")):
+        return True
+    return bool(re.match(r"gpt-[0-9]", model))
 
 
 def _split_system(messages: list[dict]) -> tuple[str, list[dict]]:
