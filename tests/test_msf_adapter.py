@@ -121,7 +121,12 @@ def test_execute_rejects_lab_range_in_phase1():
 def test_emitted_command_passes_caldera_gate():
     a = MSFAuxAdapter()
     cmd = a.plan(Task(task_id="t1", intent="smb enum", target_scope=["10.50.0.0/24"]))
-    assert evaluate(cmd, ExecutionEnv.CALDERA_ONLY).final == Verdict.APPROVE
+    decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
+    # llm_judge is a fail-closed stub (CRIT-3): ESCALATE, not silent APPROVE.
+    assert decision.final == Verdict.ESCALATE
+    assert all(
+        s.verdict == Verdict.APPROVE for s in decision.stages if s.stage != "llm_judge"
+    ), decision.reasons()
 
 
 def test_emitted_command_blocked_when_env_is_live():
@@ -134,6 +139,9 @@ def test_emitted_command_blocked_when_env_is_live():
 
 
 def test_execute_normalizes_results_and_extracts_cves():
+    # llm_judge is a fail-closed stub (CRIT-3): every command now ESCALATEs
+    # to operator review, so this adapter must be wired with a ReviewQueue
+    # and get an explicit operator APPROVE before execute() proceeds.
     rows = [
         {"host": "10.50.0.10", "port": 445, "service": "smb",
          "info": "Windows SMB v1 fingerprinted -- known CVE-2017-0144"},
@@ -141,8 +149,16 @@ def test_execute_normalizes_results_and_extracts_cves():
          "info": "OpenSSH 8.2 banner"},
     ]
     client = FakeMSFClient(rows=rows)
-    a = MSFAuxAdapter(client=client)
+    rq = ReviewQueue()
+    a = MSFAuxAdapter(client=client, review_queue=rq)
     cmd = a.plan(Task(task_id="t1", intent="smb enum", target_scope=["10.50.0.0/24"]))
+
+    with pytest.raises(MSFPolicyError, match="operator"):
+        a.execute(cmd, ExecutionEnv.CALDERA_ONLY)
+    pending = rq.list_pending()
+    assert len(pending) == 1
+    rq.decide(pending[0].review_id, verdict=ReviewVerdict.APPROVE, operator_id="op-1")
+
     finding = a.execute(cmd, ExecutionEnv.CALDERA_ONLY)
 
     assert finding.adapter_name == "msf-aux"

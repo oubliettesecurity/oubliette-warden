@@ -81,7 +81,12 @@ def test_full_pipeline_for_enumerate_intent(planner, tmp_path):
             continue
         cmd = nmap.plan(task)
         decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
-        assert decision.final == Verdict.APPROVE, decision.reasons()
+        # llm_judge is a fail-closed stub (CRIT-3): a structurally clean
+        # command still ESCALATEs to operator review rather than auto-running.
+        assert decision.final == Verdict.ESCALATE, decision.reasons()
+        assert all(
+            s.verdict == Verdict.APPROVE for s in decision.stages if s.stage != "llm_judge"
+        ), decision.reasons()
         assert any(arg == "10.50.0.0/24" for arg in cmd.argv)
 
 
@@ -100,13 +105,18 @@ def test_vuln_scan_intent_produces_research_handoff(planner, tmp_path):
     research_nodes = [n for n in graph.nodes if n.metadata.get("phase") == "research"]
     assert research_nodes, "vuln_scan kind must emit a research handoff node"
 
-    # Every non-research node must produce an approvable Nmap command.
+    # Every non-research node must produce a structurally clean Nmap command
+    # (deterministic stages APPROVE); llm_judge's fail-closed stub still
+    # routes it to operator review (CRIT-3).
     for task in graph.topological_order():
         if task.metadata.get("phase") == "research":
             continue
         cmd = nmap.plan(task)
         decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
-        assert decision.final == Verdict.APPROVE, decision.reasons()
+        assert decision.final == Verdict.ESCALATE, decision.reasons()
+        assert all(
+            s.verdict == Verdict.APPROVE for s in decision.stages if s.stage != "llm_judge"
+        ), decision.reasons()
 
 
 def test_planner_emits_attck_tags_visible_to_safety_gate(planner, tmp_path):
@@ -116,7 +126,8 @@ def test_planner_emits_attck_tags_visible_to_safety_gate(planner, tmp_path):
         cmd = nmap.plan(task)
         assert cmd.attck_technique_ids, "every emitted command must carry ATT&CK tags"
         decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
-        assert decision.final == Verdict.APPROVE
+        # llm_judge fail-closed stub (CRIT-3): ESCALATE, not silent APPROVE.
+        assert decision.final == Verdict.ESCALATE
 
 
 # ---------- planner -> codegen -> safety -> analysis (the §2 Obj 3 loop) ----------
@@ -131,13 +142,18 @@ def test_full_pipeline_routes_scan_output_to_analyst(planner, tmp_path):
     graph = planner.plan("enumerate hosts on 10.50.0.0/24")
     nmap = NmapAdapter(scratch_dir=tmp_path)
 
-    # Plan + gate every non-research node.
+    # Plan + gate every non-research node. llm_judge fail-closed stub
+    # (CRIT-3) means these ESCALATE to operator review rather than
+    # auto-APPROVE; the deterministic stages are still clean.
     for task in graph.topological_order():
         if task.metadata.get("phase") == "research":
             continue
         cmd = nmap.plan(task)
         decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
-        assert decision.final == Verdict.APPROVE, decision.reasons()
+        assert decision.final == Verdict.ESCALATE, decision.reasons()
+        assert all(
+            s.verdict == Verdict.APPROVE for s in decision.stages if s.stage != "llm_judge"
+        ), decision.reasons()
 
     # Simulated execution returns the fixture XML; analyst consumes it.
     analyst = CyberAnalyst()
@@ -166,7 +182,8 @@ def test_analyst_respects_asset_profile_in_e2e(planner, tmp_path):
         if task.metadata.get("phase") == "research":
             continue
         cmd = nmap.plan(task)
-        assert evaluate(cmd, ExecutionEnv.CALDERA_ONLY).final == Verdict.APPROVE
+        # llm_judge fail-closed stub (CRIT-3): ESCALATE, not silent APPROVE.
+        assert evaluate(cmd, ExecutionEnv.CALDERA_ONLY).final == Verdict.ESCALATE
 
     # Make the SSH host mission-critical; the SMB and HTTP hosts trivial.
     # Top finding must shift to SSH even though SMB has higher service prior
