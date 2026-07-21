@@ -214,11 +214,13 @@ def test_http_layer_smoke():
         reasoning_chain=["scope=10.50.0.0/24"],
     )
 
-    r = client.get("/reviews")
+    r = client.get("/reviews", headers={"Authorization": "Bearer secret-token"})
     assert r.status_code == 200
     assert any(item["review_id"] == rv.review_id for item in r.json())
 
-    r = client.get(f"/reviews/{rv.review_id}")
+    r = client.get(
+        f"/reviews/{rv.review_id}", headers={"Authorization": "Bearer secret-token"}
+    )
     assert r.status_code == 200
     assert r.json()["proposing_agent"] == "planner"
 
@@ -240,7 +242,7 @@ def test_http_layer_smoke():
     )
     assert r.status_code == 409
 
-    r = client.get("/audit")
+    r = client.get("/audit", headers={"Authorization": "Bearer secret-token"})
     assert r.status_code == 200
     assert len(r.json()) == 2
 
@@ -323,6 +325,71 @@ def test_decide_ignores_forged_operator_id_in_body():
     )
     assert r.status_code == 200
     assert r.json()["operator_id"] == "op-alice"
+
+
+def test_list_reviews_without_credentials_is_rejected():
+    try:
+        client, _rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get("/reviews")
+    assert r.status_code == 401
+
+
+def test_list_reviews_with_valid_key_succeeds():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get("/reviews", headers={"Authorization": "Bearer secret-token"})
+    assert r.status_code == 200
+    assert any(item["review_id"] == rv.review_id for item in r.json())
+
+
+def test_get_review_without_credentials_is_rejected():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get(f"/reviews/{rv.review_id}")
+    assert r.status_code == 401
+
+
+def test_get_review_with_valid_key_succeeds():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get(
+        f"/reviews/{rv.review_id}", headers={"X-API-Key": "secret-token"}
+    )
+    assert r.status_code == 200
+    assert r.json()["review_id"] == rv.review_id
+
+
+def test_audit_without_credentials_is_rejected():
+    try:
+        client, _rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get("/audit")
+    assert r.status_code == 401
+
+
+def test_audit_with_valid_key_succeeds():
+    try:
+        client, _rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get("/audit", headers={"Authorization": "Bearer secret-token"})
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
 
 
 def test_decide_fails_closed_when_no_api_keys_configured():

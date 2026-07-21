@@ -25,6 +25,11 @@ the ``api_keys`` mapping passed to ``create_app`` (or the
 NON-AUTHORITATIVE and never used to attribute a decision — the operator
 identity always comes from the authenticated token. If no keys are
 configured, the endpoint fails closed (401) rather than trusting the caller.
+
+The read routes (``GET /reviews``, ``GET /reviews/{id}``, ``GET /audit``)
+leak sensitive data — reasoning chains and the full audit log including
+command ``argv``/``env`` — so they are gated by the same
+``authenticate_operator`` dependency and fail closed identically.
 """
 
 from __future__ import annotations
@@ -120,11 +125,16 @@ def create_app(queue: ReviewQueue, api_keys: dict[str, str] | None = None):
     app = FastAPI(title="Oubliette Warden Operator UI", version="0.1.0")
 
     @app.get("/reviews")
-    def list_reviews() -> list[dict[str, Any]]:
+    def list_reviews(
+        operator_id: str = Depends(authenticate_operator),
+    ) -> list[dict[str, Any]]:
         return [_serialize(r) for r in queue.list_pending()]
 
     @app.get("/reviews/{review_id}")
-    def get_review(review_id: str) -> dict[str, Any]:
+    def get_review(
+        review_id: str,
+        operator_id: str = Depends(authenticate_operator),
+    ) -> dict[str, Any]:
         rv = queue.get(review_id)
         if rv is None:
             raise HTTPException(status_code=404, detail="review not found")
@@ -162,7 +172,9 @@ def create_app(queue: ReviewQueue, api_keys: dict[str, str] | None = None):
         }
 
     @app.get("/audit")
-    def audit() -> list[dict[str, Any]]:
+    def audit(
+        operator_id: str = Depends(authenticate_operator),
+    ) -> list[dict[str, Any]]:
         return queue.audit_log()
 
     return app
