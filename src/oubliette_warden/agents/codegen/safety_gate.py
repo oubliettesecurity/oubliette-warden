@@ -19,9 +19,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .base import AttackTechnique, Command, ExecutionEnv
+
+if TYPE_CHECKING:  # avoid an import cycle; duck-type the graph at runtime
+    from ..planner.planner import TaskGraph
 
 
 class Verdict(str, Enum):
@@ -48,6 +51,20 @@ class GateDecision:
 
 # Stage signature: takes (command, env), returns StageResult.
 StageFn = Callable[[Command, ExecutionEnv], StageResult]
+
+
+@dataclass(frozen=True)
+class GateContext:
+    """Plan/execution context threaded to the gate for the current run.
+
+    Carried by the orchestrator that owns the plan (parallel to an adapter's
+    optional ``_review_queue``). ``plan`` is the authoritative TaskGraph and
+    ``completed_task_ids`` is the set of task ids finished so far, so the
+    plan_consistency stage can verify attributability and correct ordering.
+    """
+
+    plan: "TaskGraph"
+    completed_task_ids: set[str] = field(default_factory=set)
 
 
 def _stage_pre_filter(cmd: Command, env: ExecutionEnv) -> StageResult:
@@ -142,9 +159,49 @@ DEFAULT_PIPELINE: list[StageFn] = [
 ]
 
 
-def evaluate(cmd: Command, env: ExecutionEnv, pipeline: list[StageFn] | None = None) -> GateDecision:
-    """Run the full pipeline. DENY short-circuits; ESCALATE accumulates."""
-    pipeline = pipeline or DEFAULT_PIPELINE
+def _make_attribution_stage(cmd: Command, context: "GateContext | None") -> StageFn:
+    """Build the plan_consistency stage for the runtime default pipeline.
+
+    Fail-closed (CRIT-1 §3d): when there is no plan context, or the command
+    carries no task_id, the command is unattributable and the stage DENYs —
+    no command executes without plan attribution. Otherwise it delegates to the
+    real plan_consistency verifier, closed over the plan and completed-task set.
+    """
+    if context is None or not cmd.task_id:
+        def _deny_unattributable(_cmd: Command, _env: ExecutionEnv) -> StageResult:
+            return StageResult(
+                "plan_consistency",
+                Verdict.DENY,
+                "unattributable: no plan context",
+            )
+
+        return _deny_unattributable
+
+    # Local import avoids a safety_gate<->plan_consistency import cycle.
+    from .plan_consistency import make_plan_consistency_stage
+
+    return make_plan_consistency_stage(
+        context.plan, cmd.task_id, context.completed_task_ids
+    )
+
+
+def evaluate(
+    cmd: Command,
+    env: ExecutionEnv,
+    pipeline: list[StageFn] | None = None,
+    *,
+    context: "GateContext | None" = None,
+) -> GateDecision:
+    """Run the full pipeline. DENY short-circuits; ESCALATE accumulates.
+
+    On the default pipeline (``pipeline is None``), plan_consistency runs FIRST:
+    attributability gates before any other check, and fails closed when plan
+    context is absent (see ``_make_attribution_stage``). Passing an explicit
+    ``pipeline`` runs exactly those stages (used by unit tests that target the
+    downstream stages, and by callers that compose their own pipeline).
+    """
+    if pipeline is None:
+        pipeline = [_make_attribution_stage(cmd, context), *DEFAULT_PIPELINE]
     results: list[StageResult] = []
     final = Verdict.APPROVE
     for stage in pipeline:

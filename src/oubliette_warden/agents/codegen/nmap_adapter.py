@@ -112,6 +112,7 @@ class NmapAdapter(CommandAdapter):
             is_active_probe=True,
             expected_runtime_seconds=min(self._timeout, 300),
             rationale=f"Phase I enumeration: intent={task.intent!r} scope={targets}",
+            task_id=task.task_id,
         )
 
     def execute(self, command: Command, env: ExecutionEnv) -> Finding:

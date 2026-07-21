@@ -20,10 +20,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oubliette_warden.agents.analysis.analyst import CyberAnalyst  # noqa: E402
 from oubliette_warden.agents.analysis.models import AssetProfile  # noqa: E402
-from oubliette_warden.agents.codegen.base import ExecutionEnv  # noqa: E402
-from oubliette_warden.agents.codegen.nmap_adapter import NmapAdapter  # noqa: E402
-from oubliette_warden.agents.codegen.safety_gate import Verdict, evaluate  # noqa: E402
-from oubliette_warden.agents.planner.planner import Planner  # noqa: E402
+from oubliette_warden.agents.codegen.base import ExecutionEnv
+from oubliette_warden.agents.codegen.nmap_adapter import NmapAdapter
+from oubliette_warden.agents.codegen.safety_gate import (
+    DEFAULT_PIPELINE,
+    GateContext,
+    Verdict,
+    evaluate,
+)
+from oubliette_warden.agents.planner.planner import Planner
+
+
+def _downstream(cmd, env):
+    """Evaluate the five downstream deterministic stages explicitly.
+
+    CRIT-1 made the default pipeline prepend a fail-closed plan_consistency
+    stage; these planner->codegen->analyst contract tests target the downstream
+    stages, so they pin DEFAULT_PIPELINE. Attribution wiring is covered by
+    test_full_pipeline_threads_plan_context below and by test_safety_gate.py.
+    """
+    return evaluate(cmd, env, pipeline=DEFAULT_PIPELINE)
 
 
 # Canonical Nmap XML the simulated CALDERA range would return for the
@@ -80,7 +96,7 @@ def test_full_pipeline_for_enumerate_intent(planner, tmp_path):
         if task.metadata.get("phase") == "research":
             continue
         cmd = nmap.plan(task)
-        decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
+        decision = _downstream(cmd, ExecutionEnv.CALDERA_ONLY)
         # llm_judge is a fail-closed stub (CRIT-3): a structurally clean
         # command still ESCALATEs to operator review rather than auto-running.
         assert decision.final == Verdict.ESCALATE, decision.reasons()
@@ -95,7 +111,7 @@ def test_full_pipeline_blocks_when_env_is_live(planner, tmp_path):
     nmap = NmapAdapter(scratch_dir=tmp_path)
     task = graph.topological_order()[0]
     cmd = nmap.plan(task)
-    decision = evaluate(cmd, ExecutionEnv.LIVE)
+    decision = _downstream(cmd, ExecutionEnv.LIVE)
     assert decision.final == Verdict.DENY
 
 
@@ -112,7 +128,7 @@ def test_vuln_scan_intent_produces_research_handoff(planner, tmp_path):
         if task.metadata.get("phase") == "research":
             continue
         cmd = nmap.plan(task)
-        decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
+        decision = _downstream(cmd, ExecutionEnv.CALDERA_ONLY)
         assert decision.final == Verdict.ESCALATE, decision.reasons()
         assert all(
             s.verdict == Verdict.APPROVE for s in decision.stages if s.stage != "llm_judge"
@@ -125,7 +141,7 @@ def test_planner_emits_attck_tags_visible_to_safety_gate(planner, tmp_path):
     for task in graph.topological_order():
         cmd = nmap.plan(task)
         assert cmd.attck_technique_ids, "every emitted command must carry ATT&CK tags"
-        decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
+        decision = _downstream(cmd, ExecutionEnv.CALDERA_ONLY)
         # llm_judge fail-closed stub (CRIT-3): ESCALATE, not silent APPROVE.
         assert decision.final == Verdict.ESCALATE
 
@@ -149,7 +165,7 @@ def test_full_pipeline_routes_scan_output_to_analyst(planner, tmp_path):
         if task.metadata.get("phase") == "research":
             continue
         cmd = nmap.plan(task)
-        decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
+        decision = _downstream(cmd, ExecutionEnv.CALDERA_ONLY)
         assert decision.final == Verdict.ESCALATE, decision.reasons()
         assert all(
             s.verdict == Verdict.APPROVE for s in decision.stages if s.stage != "llm_judge"
@@ -183,7 +199,7 @@ def test_analyst_respects_asset_profile_in_e2e(planner, tmp_path):
             continue
         cmd = nmap.plan(task)
         # llm_judge fail-closed stub (CRIT-3): ESCALATE, not silent APPROVE.
-        assert evaluate(cmd, ExecutionEnv.CALDERA_ONLY).final == Verdict.ESCALATE
+        assert _downstream(cmd, ExecutionEnv.CALDERA_ONLY).final == Verdict.ESCALATE
 
     # Make the SSH host mission-critical; the SMB and HTTP hosts trivial.
     # Top finding must shift to SSH even though SMB has higher service prior
@@ -201,3 +217,50 @@ def test_analyst_respects_asset_profile_in_e2e(planner, tmp_path):
     )
     top = findings[0]
     assert top.asset_address == "10.50.0.20"
+
+
+# ---------- CRIT-1: attribution threads end-to-end through the default gate ----------
+
+
+def test_full_pipeline_threads_plan_context(planner, tmp_path):
+    """With a GateContext threaded from the plan (as the orchestrator supplies),
+    the default gate path runs plan_consistency FIRST and never fails closed:
+    each attributable, in-order command is admitted by attribution (the run may
+    still ESCALATE downstream via the llm_judge stub, but plan_consistency never
+    DENYs an on-plan command). This is the wired path CRIT-1 delivers."""
+    graph = planner.plan("vuln scan against 10.50.0.0/24")
+    nmap = NmapAdapter(scratch_dir=tmp_path)
+
+    completed: set[str] = set()
+    saw_plan_consistency = False
+    for task in graph.topological_order():
+        if task.metadata.get("phase") == "research":
+            completed.add(task.task_id)
+            continue
+        cmd = nmap.plan(task)
+        assert cmd.task_id == task.task_id  # adapter populated attribution
+        context = GateContext(plan=graph, completed_task_ids=set(completed))
+        decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY, context=context)
+
+        by_stage = {s.stage: s.verdict for s in decision.stages}
+        assert "plan_consistency" in by_stage
+        saw_plan_consistency = True
+        # attribution admits the on-plan command (never DENY on the wired path);
+        # the FIRST stage is plan_consistency.
+        assert decision.stages[0].stage == "plan_consistency"
+        assert by_stage["plan_consistency"] != Verdict.DENY
+        completed.add(task.task_id)
+
+    assert saw_plan_consistency
+
+
+def test_full_pipeline_without_context_fails_closed(planner, tmp_path):
+    """The same commands, evaluated on the default path WITHOUT plan context,
+    are denied as unattributable — no command executes without plan attribution."""
+    graph = planner.plan("enumerate hosts on 10.50.0.0/24")
+    nmap = NmapAdapter(scratch_dir=tmp_path)
+    task = graph.topological_order()[0]
+    cmd = nmap.plan(task)
+    decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)  # no context
+    assert decision.final == Verdict.DENY
+    assert any("unattributable" in s.reason for s in decision.stages)

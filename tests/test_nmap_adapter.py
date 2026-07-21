@@ -23,7 +23,23 @@ from oubliette_warden.agents.codegen.nmap_adapter import (  # noqa: E402
 
 
 from oubliette_warden.agents.codegen import nmap_adapter as nmap_mod
+from oubliette_warden.agents.codegen.safety_gate import GateContext
+from oubliette_warden.agents.planner.planner import TaskGraph
 from oubliette_warden.operator_ui.review_queue import ReviewQueue, ReviewVerdict
+
+
+def _ctx_for(task_id: str, targets: list[str], technique_ids: list[str]) -> GateContext:
+    """Minimal single-node plan context that attributes a command so the gate's
+    plan_consistency stage APPROVEs and downstream stages can be exercised."""
+    node = Task(
+        task_id=task_id,
+        intent="gate-test",
+        target_scope=targets,
+        attck_technique_ids=technique_ids,
+        metadata={},  # no phase -> adapter/phase check skipped
+    )
+    plan = TaskGraph(intent="t", target_scope=targets, nodes=[node], edges=[])
+    return GateContext(plan=plan, completed_task_ids=set())
 
 
 @pytest.fixture
@@ -177,6 +193,9 @@ def test_execute_refuses_command_the_gate_denies(adapter, monkeypatch):
 
     monkeypatch.setattr(nmap_mod.subprocess, "run", _boom)
     monkeypatch.setattr(adapter, "is_available", lambda: True)
+    # Attribute the command (CRIT-1) so the DENY under test genuinely comes from
+    # pattern_detector's 'shutdown' token, not the fail-closed attribution stage.
+    adapter._gate_context = _ctx_for("deny-1", ["10.0.0.1"], ["T1595"])
 
     # Passes _enforce_phase1_policy (caldera, non-impact, no --script) but the
     # gate's pattern_detector DENYs the 'shutdown' token.
@@ -189,6 +208,7 @@ def test_execute_refuses_command_the_gate_denies(adapter, monkeypatch):
         is_active_probe=True,
         expected_runtime_seconds=10,
         rationale="test",
+        task_id="deny-1",
     )
     with pytest.raises(NmapPolicyError, match="gate"):
         adapter.execute(cmd, ExecutionEnv.CALDERA_ONLY)
@@ -199,6 +219,10 @@ def test_execute_escalate_blocks_until_operator_approval(tmp_path, monkeypatch):
     """ESCALATE verdicts are routed to the ReviewQueue and block until APPROVE."""
     rq = ReviewQueue()
     adapter = NmapAdapter(scratch_dir=tmp_path, review_queue=rq)
+    # CRIT-1: attribution is now mandatory. Supply a plan context so the command
+    # is attributable (plan_consistency APPROVEs) and the ESCALATE we want to
+    # test (mcp_guard, runtime > 1800) is what drives the review-queue path.
+    adapter._gate_context = _ctx_for("esc-1", ["10.0.0.1"], ["T1595"])
 
     ran = {"count": 0}
 
@@ -224,6 +248,7 @@ def test_execute_escalate_blocks_until_operator_approval(tmp_path, monkeypatch):
         is_active_probe=True,
         expected_runtime_seconds=3600,
         rationale="long scan",
+        task_id="esc-1",
     )
 
     # First attempt: no operator approval yet -> blocked + enqueued.
