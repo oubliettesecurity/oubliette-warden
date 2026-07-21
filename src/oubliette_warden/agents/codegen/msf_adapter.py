@@ -150,6 +150,7 @@ class MSFAuxAdapter(CommandAdapter):
                 f"Phase I auxiliary scan: intent={task.intent!r} "
                 f"module={module!r} scope={targets}"
             ),
+            task_id=task.task_id,
         )
 
     def execute(self, command: Command, env: ExecutionEnv) -> Finding:

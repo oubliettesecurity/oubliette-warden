@@ -10,7 +10,7 @@ import sys
 
 from ..agents.codegen.base import ExecutionEnv
 from ..agents.codegen.nmap_adapter import NmapAdapter
-from ..agents.codegen.safety_gate import evaluate
+from ..agents.codegen.safety_gate import GateContext, evaluate
 from ..agents.planner.planner import Planner
 
 
@@ -28,11 +28,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     cmd = nmap.plan(first_task)
 
+    # CRIT-1: the gate now runs plan_consistency FIRST and fails closed without
+    # plan attribution, so the orchestrator must supply the plan/completed-set
+    # context. Here the first task has no completed predecessors.
+    context = GateContext(plan=graph, completed_task_ids=set())
+
     print(f"command: {' '.join(cmd.argv)}")
     print(f"env:     CALDERA_ONLY")
     print("-" * 60)
-    print("five-stage safety pipeline verdicts:")
-    decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
+    print("safety pipeline verdicts:")
+    decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY, context=context)
     for stage in decision.stages:
         print(f"  {stage.stage:<18} {stage.verdict.value.upper():<10} {stage.reason}")
     print("-" * 60)

@@ -71,6 +71,10 @@ class Command:
     is_active_probe: bool
     expected_runtime_seconds: int
     rationale: str
+    # Links this command back to the planned Task that produced it. Populated by
+    # each adapter's plan(task) from task.task_id. An empty task_id is treated as
+    # unattributable by the safety gate's plan_consistency stage (fail-closed).
+    task_id: str = ""
 
     def is_impact_class(self) -> bool:
         return AttackTechnique.IMPACT in self.attck_tactics
@@ -99,6 +103,15 @@ class CommandAdapter(ABC):
     # safety gate are routed here and block execution until an operator records
     # an APPROVE for the specific command. Adapters set this in __init__.
     _review_queue: Any = None
+
+    # Optional plan/execution context for the run. When set by the orchestrator
+    # that owns the plan, it carries the TaskGraph and the set of completed
+    # task ids so the safety gate's plan_consistency stage can verify that this
+    # command is attributable to a real, correctly-ordered planned task. When
+    # unset (None), plan_consistency fails closed: no command executes without
+    # plan attribution. Typed as Any to avoid a base<->safety_gate import cycle;
+    # it holds a ``safety_gate.GateContext``.
+    _gate_context: Any = None
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -143,7 +156,7 @@ class CommandAdapter(ABC):
         # Local import avoids a base<->safety_gate import cycle.
         from . import safety_gate
 
-        decision = safety_gate.evaluate(command, env)
+        decision = safety_gate.evaluate(command, env, context=self._gate_context)
         if decision.final == safety_gate.Verdict.APPROVE:
             return
         if decision.final == safety_gate.Verdict.DENY:

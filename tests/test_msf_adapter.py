@@ -19,7 +19,28 @@ from oubliette_warden.agents.codegen.safety_gate import Verdict, evaluate  # noq
 
 
 from oubliette_warden.agents.codegen.base import AttackTechnique, Command
+from oubliette_warden.agents.codegen.safety_gate import DEFAULT_PIPELINE, GateContext
+from oubliette_warden.agents.planner.planner import TaskGraph
 from oubliette_warden.operator_ui.review_queue import ReviewQueue, ReviewVerdict
+
+
+def _downstream(cmd, env):
+    """Pin the five downstream stages (CRIT-1 prepends plan_consistency to the
+    default path; these gate-integration checks target the downstream stages)."""
+    return evaluate(cmd, env, pipeline=DEFAULT_PIPELINE)
+
+
+def _ctx_for(task_id: str, targets: list[str], technique_ids: list[str]) -> GateContext:
+    """Single-node plan context so plan_consistency APPROVEs an attributable command."""
+    node = Task(
+        task_id=task_id,
+        intent="gate-test",
+        target_scope=targets,
+        attck_technique_ids=technique_ids,
+        metadata={},  # no phase -> adapter/phase check skipped
+    )
+    plan = TaskGraph(intent="t", target_scope=targets, nodes=[node], edges=[])
+    return GateContext(plan=plan, completed_task_ids=set())
 
 
 class FakeMSFClient:
@@ -121,7 +142,7 @@ def test_execute_rejects_lab_range_in_phase1():
 def test_emitted_command_passes_caldera_gate():
     a = MSFAuxAdapter()
     cmd = a.plan(Task(task_id="t1", intent="smb enum", target_scope=["10.50.0.0/24"]))
-    decision = evaluate(cmd, ExecutionEnv.CALDERA_ONLY)
+    decision = _downstream(cmd, ExecutionEnv.CALDERA_ONLY)
     # llm_judge is a fail-closed stub (CRIT-3): ESCALATE, not silent APPROVE.
     assert decision.final == Verdict.ESCALATE
     assert all(
@@ -132,7 +153,7 @@ def test_emitted_command_passes_caldera_gate():
 def test_emitted_command_blocked_when_env_is_live():
     a = MSFAuxAdapter()
     cmd = a.plan(Task(task_id="t1", intent="smb enum", target_scope=["10.50.0.0/24"]))
-    assert evaluate(cmd, ExecutionEnv.LIVE).final == Verdict.DENY
+    assert _downstream(cmd, ExecutionEnv.LIVE).final == Verdict.DENY
 
 
 # ---------- execute + finding shape ----------
@@ -152,6 +173,9 @@ def test_execute_normalizes_results_and_extracts_cves():
     rq = ReviewQueue()
     a = MSFAuxAdapter(client=client, review_queue=rq)
     cmd = a.plan(Task(task_id="t1", intent="smb enum", target_scope=["10.50.0.0/24"]))
+    # CRIT-1: attribution mandatory. Supply a matching plan context so
+    # plan_consistency APPROVEs and the llm_judge stub is what ESCALATEs.
+    a._gate_context = _ctx_for("t1", ["10.50.0.0/24"], ["T1135", "T1046"])
 
     with pytest.raises(MSFPolicyError, match="operator"):
         a.execute(cmd, ExecutionEnv.CALDERA_ONLY)
@@ -193,6 +217,9 @@ def test_execute_refuses_command_the_gate_denies():
     """A gate-DENYing command must never reach the RPC client."""
     client = FakeMSFClient()
     a = MSFAuxAdapter(client=client)
+    # Attribute the command (CRIT-1) so the DENY under test genuinely comes from
+    # pattern_detector's 'shutdown' token, not the fail-closed attribution stage.
+    a._gate_context = _ctx_for("deny-1", ["10.0.0.1"], ["T1595"])
     # Valid auxiliary module (passes _enforce_phase1_policy), but the gate's
     # pattern_detector DENYs the 'shutdown' token.
     cmd = Command(
@@ -204,6 +231,7 @@ def test_execute_refuses_command_the_gate_denies():
         is_active_probe=True,
         expected_runtime_seconds=60,
         rationale="test",
+        task_id="deny-1",
     )
     with pytest.raises(MSFPolicyError, match="gate"):
         a.execute(cmd, ExecutionEnv.CALDERA_ONLY)
@@ -214,6 +242,9 @@ def test_execute_escalate_blocks_until_operator_approval():
     rq = ReviewQueue()
     client = FakeMSFClient(rows=[{"host": "10.0.0.1", "info": "x"}])
     a = MSFAuxAdapter(client=client, review_queue=rq)
+    # CRIT-1: attribution mandatory; supply context so mcp_guard's ESCALATE
+    # (runtime > 1800) is what drives the review-queue path.
+    a._gate_context = _ctx_for("esc-1", ["10.0.0.1"], ["T1046"])
     # runtime > 1800 -> mcp_guard ESCALATE.
     cmd = Command(
         adapter_name="msf-aux",
@@ -224,6 +255,7 @@ def test_execute_escalate_blocks_until_operator_approval():
         is_active_probe=True,
         expected_runtime_seconds=3600,
         rationale="long scan",
+        task_id="esc-1",
     )
     with pytest.raises(MSFPolicyError, match="operator"):
         a.execute(cmd, ExecutionEnv.CALDERA_ONLY)
