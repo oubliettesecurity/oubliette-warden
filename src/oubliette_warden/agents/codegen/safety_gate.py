@@ -17,6 +17,7 @@ can reconstruct exactly why a command was allowed or blocked.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Callable
@@ -25,6 +26,8 @@ from .base import AttackTechnique, Command, ExecutionEnv
 
 if TYPE_CHECKING:  # avoid an import cycle; duck-type the graph at runtime
     from ..planner.planner import TaskGraph
+
+log = logging.getLogger(__name__)
 
 
 class Verdict(str, Enum):
@@ -198,10 +201,22 @@ def evaluate(
     attributability gates before any other check, and fails closed when plan
     context is absent (see ``_make_attribution_stage``). Passing an explicit
     ``pipeline`` runs exactly those stages (used by unit tests that target the
-    downstream stages, and by callers that compose their own pipeline).
+    downstream stages, and by callers that compose their own pipeline) and
+    BYPASSES the auto-prepended attribution stage entirely — plan_consistency
+    will NOT run. Production callers should pass ``context`` and leave
+    ``pipeline=None`` so fail-closed attribution always applies; passing an
+    explicit ``pipeline`` together with a real ``context`` is a dangerous
+    misuse and logs a warning rather than changing behavior.
     """
     if pipeline is None:
         pipeline = [_make_attribution_stage(cmd, context), *DEFAULT_PIPELINE]
+    elif context is not None:
+        log.warning(
+            "evaluate() called with an explicit pipeline and plan context set: "
+            "the auto-prepended plan_consistency attribution stage bypasses "
+            "in this case and will NOT run. Production callers should pass "
+            "context and leave pipeline=None."
+        )
     results: list[StageResult] = []
     final = Verdict.APPROVE
     for stage in pipeline:
