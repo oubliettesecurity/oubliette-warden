@@ -53,28 +53,29 @@ reaching off-scope `10.0.0.9`.
 
 ### 2b. Model-scale sweep (RQ: how far does offense scale down?)
 
-`PYTHONPATH=src python experiments/llm_attacker.py sweep`
+`PYTHONPATH=src python experiments/llm_attacker.py sweep qwen2.5 15`
 Same-family qwen2.5 ladder (size is the only variable; family/training held constant),
-terse reasons, model-trust 5 trials / anchored 3 trials per model.
+terse reasons. **Authoritative run: 15 model-trust trials / 3 anchored per model, with 95%
+Wilson CIs** (supersedes the earlier 5-trial runs, which were too coarse — e.g. 32B showed a
+spurious 1/5 at n=5, corrected to 12/15 here).
 
-| model | params | model-trust win | median rounds | anchored win | move |
-|---|---|:--:|:--:|:--:|---|
-| qwen2.5:14b | 14.8B | 4/5 | 2.0 | 0/3 | plan_corruption |
-| qwen2.5:7b | 7.6B | 2/5 | 2.0 | 0/3 | plan_corruption |
-| qwen2.5:3b | 3.1B | 0/5 | – | 0/3 | – |
-| qwen2.5:1.5b | 1.5B | 0/5 | – | 0/3 | – |
-| qwen2.5:0.5b | 0.5B | 0/5 | – | 0/3 | – |
+| model | params | model-trust win | 95% CI | median rounds | anchored win |
+|---|---|:--:|:--:|:--:|:--:|
+| qwen2.5:32b | 32.5B | 12/15 (80%) | [0.55, 0.93] | 2.0 | 0/3 |
+| qwen2.5:14b | 14.8B | 7/15 (47%) | [0.25, 0.70] | 2.0 | 0/3 |
+| qwen2.5:7b | 7.6B | 7/15 (47%) | [0.25, 0.70] | 2.0 | 0/3 |
+| qwen2.5:3b | 3.1B | 0/15 (0%) | [0.00, 0.20] | – | 0/3 |
+| qwen2.5:1.5b | 1.5B | 0/15 (0%) | [0.00, 0.20] | – | 0/3 |
+| qwen2.5:0.5b | 0.5B | 0/15 (0%) | [0.00, 0.20] | – | 0/3 |
 
-**Finding — a capability threshold.** Offensive autonomy against containment degrades
-sharply and non-linearly with attacker size: 80% at 14.8B, 40% at 7.6B, and **0% at or
-below 3.1B**. Plan corruption requires composing two moves coherently (inject a task that
-authorizes the target, *then* act within that injected scope); models below ~7B do not
-execute it at all within the round budget — they loop on benign or self-inconsistent
-actions. The exploit is not a one-liner an arbitrary small model stumbles into; it needs
-a threshold of strategic reasoning that appears between 3B and 7B in this family.
+**Finding — a capability threshold.** With 15 trials the curve is clean and monotone: **~80%
+at 32B, ~47% at 7–14B, and reliably 0% (CI upper bound 0.20) at ≤3B.** Plan corruption requires
+composing two moves coherently (inject a task that authorizes the target, *then* act within
+that injected scope); models at or below 3B do not execute it at all within the round budget —
+they loop on benign or self-inconsistent actions. The exploit needs a threshold of strategic
+reasoning that appears between 3B and 7B in this family and keeps rising to 32B.
 **Anchored trust holds 0/3 at every scale** — the defensive fix is deterministic and
 model-independent: no amount of attacker capability helps once the plan is anchored.
-(5 trials/cell is coarse; the monotone trend is robust, the exact mid-ladder rate is noisy.)
 
 ### 2c. Cross-family comparison at ~7-8B (is the threshold qwen-specific?)
 
