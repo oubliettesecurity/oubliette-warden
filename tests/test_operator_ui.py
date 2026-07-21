@@ -204,7 +204,7 @@ def test_http_layer_smoke():
     from oubliette_warden.operator_ui.api import create_app
 
     queue = ReviewQueue()
-    app = create_app(queue)
+    app = create_app(queue, api_keys={"secret-token": "op-alice"})
     client = TestClient(app)
 
     rv = queue.enqueue(
@@ -214,16 +214,19 @@ def test_http_layer_smoke():
         reasoning_chain=["scope=10.50.0.0/24"],
     )
 
-    r = client.get("/reviews")
+    r = client.get("/reviews", headers={"Authorization": "Bearer secret-token"})
     assert r.status_code == 200
     assert any(item["review_id"] == rv.review_id for item in r.json())
 
-    r = client.get(f"/reviews/{rv.review_id}")
+    r = client.get(
+        f"/reviews/{rv.review_id}", headers={"Authorization": "Bearer secret-token"}
+    )
     assert r.status_code == 200
     assert r.json()["proposing_agent"] == "planner"
 
     r = client.post(
         f"/reviews/{rv.review_id}/decide",
+        headers={"Authorization": "Bearer secret-token"},
         json={"verdict": "approve", "operator_id": "op-alice", "rationale": "ok"},
     )
     assert r.status_code == 200
@@ -234,10 +237,181 @@ def test_http_layer_smoke():
     # Second decide on same id should conflict.
     r = client.post(
         f"/reviews/{rv.review_id}/decide",
+        headers={"Authorization": "Bearer secret-token"},
         json={"verdict": "reject", "operator_id": "op-alice"},
     )
     assert r.status_code == 409
 
-    r = client.get("/audit")
+    r = client.get("/audit", headers={"Authorization": "Bearer secret-token"})
     assert r.status_code == 200
     assert len(r.json()) == 2
+
+
+# ---------- CRIT-2: /decide authentication (fail-closed) ----------
+
+
+def _auth_client():
+    """A TestClient + a pending review, wired with a single valid API key."""
+    from fastapi.testclient import TestClient
+
+    from oubliette_warden.operator_ui.api import create_app
+
+    queue = ReviewQueue()
+    app = create_app(queue, api_keys={"secret-token": "op-alice"})
+    client = TestClient(app)
+    rv = queue.enqueue(
+        proposing_agent="planner",
+        action_kind="plan",
+        summary="recon",
+        reasoning_chain=[],
+    )
+    return client, rv
+
+
+def test_decide_without_credentials_is_rejected():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.post(
+        f"/reviews/{rv.review_id}/decide",
+        json={"verdict": "approve", "operator_id": "op-alice"},
+    )
+    assert r.status_code == 401
+
+
+def test_decide_with_wrong_token_is_rejected():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.post(
+        f"/reviews/{rv.review_id}/decide",
+        headers={"Authorization": "Bearer wrong-token"},
+        json={"verdict": "approve", "operator_id": "op-alice"},
+    )
+    assert r.status_code == 401
+
+
+def test_decide_with_valid_x_api_key_header_succeeds():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.post(
+        f"/reviews/{rv.review_id}/decide",
+        headers={"X-API-Key": "secret-token"},
+        json={"verdict": "approve", "operator_id": "op-alice"},
+    )
+    assert r.status_code == 200
+    assert r.json()["operator_id"] == "op-alice"
+
+
+def test_decide_ignores_forged_operator_id_in_body():
+    """A caller authenticated as op-alice cannot impersonate another operator
+    by putting a different operator_id in the request body."""
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.post(
+        f"/reviews/{rv.review_id}/decide",
+        headers={"Authorization": "Bearer secret-token"},
+        json={"verdict": "approve", "operator_id": "op-mallory"},
+    )
+    assert r.status_code == 200
+    assert r.json()["operator_id"] == "op-alice"
+
+
+def test_list_reviews_without_credentials_is_rejected():
+    try:
+        client, _rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get("/reviews")
+    assert r.status_code == 401
+
+
+def test_list_reviews_with_valid_key_succeeds():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get("/reviews", headers={"Authorization": "Bearer secret-token"})
+    assert r.status_code == 200
+    assert any(item["review_id"] == rv.review_id for item in r.json())
+
+
+def test_get_review_without_credentials_is_rejected():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get(f"/reviews/{rv.review_id}")
+    assert r.status_code == 401
+
+
+def test_get_review_with_valid_key_succeeds():
+    try:
+        client, rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get(
+        f"/reviews/{rv.review_id}", headers={"X-API-Key": "secret-token"}
+    )
+    assert r.status_code == 200
+    assert r.json()["review_id"] == rv.review_id
+
+
+def test_audit_without_credentials_is_rejected():
+    try:
+        client, _rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get("/audit")
+    assert r.status_code == 401
+
+
+def test_audit_with_valid_key_succeeds():
+    try:
+        client, _rv = _auth_client()
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+
+    r = client.get("/audit", headers={"Authorization": "Bearer secret-token"})
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+def test_decide_fails_closed_when_no_api_keys_configured():
+    try:
+        from fastapi.testclient import TestClient
+    except ImportError:
+        pytest.skip("FastAPI/httpx not installed in this environment")
+    from oubliette_warden.operator_ui.api import create_app
+
+    queue = ReviewQueue()
+    app = create_app(queue, api_keys={})  # explicitly no keys configured
+    client = TestClient(app)
+    rv = queue.enqueue(
+        proposing_agent="planner",
+        action_kind="plan",
+        summary="recon",
+        reasoning_chain=[],
+    )
+
+    r = client.post(
+        f"/reviews/{rv.review_id}/decide",
+        headers={"Authorization": "Bearer anything-at-all"},
+        json={"verdict": "approve", "operator_id": "op-alice"},
+    )
+    assert r.status_code == 401

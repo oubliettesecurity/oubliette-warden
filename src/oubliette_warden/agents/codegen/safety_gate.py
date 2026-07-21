@@ -109,10 +109,15 @@ def _stage_llm_judge(cmd: Command, env: ExecutionEnv) -> StageResult:
 
     Phase I integration point: when wired to a real judge, this stage receives
     the full command + planning rationale and returns a verdict with a free-form
-    explanation. For now, the stub approves; the gate's overall decision is
-    still subject to the deterministic stages above.
+    explanation. No real judge is wired in yet, so this is a fail-closed
+    stopgap: it ESCALATEs every command to operator review rather than
+    silently APPROVEing work no judge has actually looked at.
     """
-    return StageResult("llm_judge", Verdict.APPROVE, "stub: deferred to integration")
+    return StageResult(
+        "llm_judge",
+        Verdict.ESCALATE,
+        "llm_judge not implemented — failing closed",
+    )
 
 
 def _stage_mcp_guard(cmd: Command, env: ExecutionEnv) -> StageResult:
