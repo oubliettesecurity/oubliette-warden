@@ -59,17 +59,19 @@ def _run(plan, task_id, completed, cmd, cfg=None):
 
 
 def test_on_plan_command_approved():
-    assert _run(_plan(), "recon-1", [], _cmd()).verdict is Verdict.APPROVE
+    assert _run(_plan(approved=True), "recon-1", [], _cmd()).verdict is Verdict.APPROVE
 
 
 def test_cidr_host_inside_planned_subnet_approved():
     cmd = _cmd(target_scope=["192.168.1.50"], argv=["nmap", "-sV", "192.168.1.50"])
-    assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.APPROVE
+    assert _run(_plan(approved=True), "recon-1", [], cmd).verdict is Verdict.APPROVE
 
 
 def test_out_of_scope_target_denied():
+    # Operator-approved so the DENY under test is scope containment, not the
+    # (now-default) anchored approval gate.
     cmd = _cmd(target_scope=["10.0.0.9"], argv=["nmap", "-sn", "10.0.0.9"])
-    assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.DENY
+    assert _run(_plan(approved=True), "recon-1", [], cmd).verdict is Verdict.DENY
 
 
 def test_spoofed_declared_scope_denied():
@@ -77,28 +79,29 @@ def test_spoofed_declared_scope_denied():
     out-of-scope host. A verifier that trusts only the self-declared scope field
     is spoofable; a faithful one validates the real command arguments."""
     cmd = _cmd(target_scope=["192.168.1.0/24"], argv=["nmap", "-sn", "10.0.0.9"])
-    assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.DENY
+    assert _run(_plan(approved=True), "recon-1", [], cmd).verdict is Verdict.DENY
 
 
 def test_unplanned_dangerous_tactic_denied():
     cmd = _cmd(attck_tactics=[AttackTechnique.EXFILTRATION])
-    assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.DENY
+    assert _run(_plan(approved=True), "recon-1", [], cmd).verdict is Verdict.DENY
 
 
 def test_skip_ahead_denied():
-    # vuln-1 depends on recon-1; recon-1 not completed -> skip-ahead.
+    # vuln-1 depends on recon-1; recon-1 not completed -> skip-ahead. Both tasks
+    # approved so the DENY under test is ordering, not the anchored approval gate.
     cmd = _cmd(adapter_name="msf-aux")
-    assert _run(_plan(), "vuln-1", [], cmd).verdict is Verdict.DENY
+    assert _run(_plan(approved=True), "vuln-1", [], cmd).verdict is Verdict.DENY
 
 
 def test_unexpected_tool_for_phase_escalates():
     cmd = _cmd(adapter_name="msf-aux")  # recon phase expects nmap
-    assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.ESCALATE
+    assert _run(_plan(approved=True), "recon-1", [], cmd).verdict is Verdict.ESCALATE
 
 
 def test_broader_technique_escalates():
     cmd = _cmd(attck_technique_ids=["T1595.001", "T1055"])  # T1055 undeclared
-    assert _run(_plan(), "recon-1", [], cmd).verdict is Verdict.ESCALATE
+    assert _run(_plan(approved=True), "recon-1", [], cmd).verdict is Verdict.ESCALATE
 
 
 def test_plan_corruption_model_vs_anchored():
@@ -136,12 +139,14 @@ def test_anchored_mode_approves_human_baseline():
 
 
 def test_verbose_reason_leaks_boundary():
+    # Approved so the leak under test is the out-of-scope reason, not the
+    # anchored approval-gate reason.
     cmd = _cmd(target_scope=["10.0.0.9"], argv=["nmap", "-sn", "10.0.0.9"])
     terse = _run(
-        _plan(), "recon-1", [], cmd, VerifierConfig(reason_verbosity="terse")
+        _plan(approved=True), "recon-1", [], cmd, VerifierConfig(reason_verbosity="terse")
     ).reason
     verbose = _run(
-        _plan(), "recon-1", [], cmd, VerifierConfig(reason_verbosity="verbose")
+        _plan(approved=True), "recon-1", [], cmd, VerifierConfig(reason_verbosity="verbose")
     ).reason
     assert "10.0.0.9" not in terse
     assert "10.0.0.9" in verbose  # the attacker-observable oracle
@@ -149,6 +154,16 @@ def test_verbose_reason_leaks_boundary():
 
 def test_drops_into_evaluate_pipeline():
     # Proves the StageFn signature composes with the existing gate, unchanged.
-    stage = make_plan_consistency_stage(_plan(), "recon-1", set(), None)
+    stage = make_plan_consistency_stage(_plan(approved=True), "recon-1", set(), None)
     decision = evaluate(_cmd(), ExecutionEnv.CALDERA_ONLY, pipeline=[stage])
     assert decision.final is Verdict.APPROVE
+
+
+def test_default_plan_trust_denies_non_approved_task():
+    """Default VerifierConfig() is now anchored: a task lacking operator_approved
+    DENYs; the identical task with operator_approved=True passes plan_consistency."""
+    denied = _run(_plan(approved=False), "recon-1", [], _cmd(), None)
+    assert denied.verdict is Verdict.DENY
+
+    approved = _run(_plan(approved=True), "recon-1", [], _cmd(), None)
+    assert approved.verdict is Verdict.APPROVE

@@ -31,12 +31,18 @@ def _downstream(cmd, env):
 
 
 def _ctx_for(task_id: str, targets: list[str], technique_ids: list[str]) -> GateContext:
-    """Single-node plan context so plan_consistency APPROVEs an attributable command."""
+    """Single-node plan context so plan_consistency APPROVEs an attributable command.
+
+    operator_approved=True: default plan_trust is now 'anchored', so a task
+    must carry operator approval to pass plan_consistency regardless of the
+    downstream stage under test here.
+    """
     node = Task(
         task_id=task_id,
         intent="gate-test",
         target_scope=targets,
         attck_technique_ids=technique_ids,
+        operator_approved=True,
         metadata={},  # no phase -> adapter/phase check skipped
     )
     plan = TaskGraph(intent="t", target_scope=targets, nodes=[node], edges=[])
