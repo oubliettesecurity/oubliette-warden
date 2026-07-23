@@ -273,3 +273,55 @@ def test_predecessor_complete_passes_plan_consistency():
     by_stage = {s.stage: s.verdict for s in decision.stages}
     assert by_stage["plan_consistency"] == Verdict.APPROVE
     assert decision.final != Verdict.DENY
+
+
+# ---------- Minor follow-up: warn on the explicit-pipeline + context bypass seam ----------
+#
+# Passing an explicit `pipeline` skips the auto-prepended plan_consistency
+# attribution stage entirely (see `evaluate`'s default-path branch above). That's
+# intentional for test isolation (explicit pipeline + context=None), but a caller
+# who has real plan `context` and *also* passes an explicit pipeline silently
+# loses fail-closed attribution. That combination should emit a warning.
+
+_BYPASS_WARNING_SUBSTRING = "bypasses"
+
+
+def test_explicit_pipeline_with_context_warns_of_bypass(caplog):
+    """The dangerous case: explicit pipeline + real context -> plan_consistency
+    never runs. This must emit a log.warning naming the bypass."""
+    ctx = GateContext(plan=_single_task_plan(), completed_task_ids=set())
+    with caplog.at_level("WARNING", logger="oubliette_warden.agents.codegen.safety_gate"):
+        evaluate(_cmd(task_id="task-a"), ExecutionEnv.CALDERA_ONLY, pipeline=DEFAULT_PIPELINE, context=ctx)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(_BYPASS_WARNING_SUBSTRING in r.message.lower() for r in warnings), caplog.text
+    assert any("plan_consistency" in r.message for r in warnings), caplog.text
+
+
+def test_explicit_pipeline_without_context_does_not_warn(caplog):
+    """Pure test-isolation path: explicit pipeline, context=None. This is the
+    normal way existing unit tests call evaluate() -- must stay silent."""
+    with caplog.at_level("WARNING", logger="oubliette_warden.agents.codegen.safety_gate"):
+        evaluate(_cmd(task_id="task-a"), ExecutionEnv.CALDERA_ONLY, pipeline=DEFAULT_PIPELINE)
+    assert not any(r.levelname == "WARNING" for r in caplog.records), caplog.text
+
+
+def test_default_path_does_not_warn():
+    """Normal production path (pipeline=None): attribution stage IS prepended,
+    so there is nothing to warn about."""
+    ctx = GateContext(plan=_single_task_plan(), completed_task_ids=set())
+    import logging
+
+    logger = logging.getLogger("oubliette_warden.agents.codegen.safety_gate")
+    records = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Collector()
+    logger.addHandler(handler)
+    try:
+        evaluate(_cmd(task_id="task-a"), ExecutionEnv.CALDERA_ONLY, context=ctx)
+    finally:
+        logger.removeHandler(handler)
+    assert not any(r.levelno >= logging.WARNING for r in records)
