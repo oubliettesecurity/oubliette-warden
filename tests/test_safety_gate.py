@@ -197,13 +197,14 @@ def _single_task_plan(*, approved: bool = False) -> TaskGraph:
     return TaskGraph(intent="t", target_scope=SCOPE, nodes=[node], edges=[])
 
 
-def _two_task_plan() -> TaskGraph:
+def _two_task_plan(*, approved: bool = False) -> TaskGraph:
     """recon (task-a) must complete before follow-on (task-b)."""
     a = Task(
         task_id="task-a",
         intent="recon",
         target_scope=SCOPE,
         attck_technique_ids=["T1595"],
+        operator_approved=approved,
         metadata={},
     )
     b = Task(
@@ -211,6 +212,7 @@ def _two_task_plan() -> TaskGraph:
         intent="recon 2",
         target_scope=SCOPE,
         attck_technique_ids=["T1595"],
+        operator_approved=approved,
         metadata={},
     )
     return TaskGraph(
@@ -223,7 +225,7 @@ def test_valid_context_passes_plan_consistency_through_default_path():
     and the command flows through the default pipeline. The final verdict is
     ESCALATE only because of the llm_judge fail-closed stub (CRIT-3), never a
     plan_consistency DENY."""
-    ctx = GateContext(plan=_single_task_plan(), completed_task_ids=set())
+    ctx = GateContext(plan=_single_task_plan(approved=True), completed_task_ids=set())
     decision = evaluate(_cmd(task_id="task-a"), ExecutionEnv.CALDERA_ONLY, context=ctx)
 
     by_stage = {s.stage: s.verdict for s in decision.stages}
@@ -258,8 +260,10 @@ def test_off_plan_task_id_denied():
 
 
 def test_missing_predecessor_denied():
-    """Skip-ahead: task-b's predecessor task-a is not completed -> DENY."""
-    ctx = GateContext(plan=_two_task_plan(), completed_task_ids=set())
+    """Skip-ahead: task-b's predecessor task-a is not completed -> DENY.
+    Tasks are operator-approved so the DENY under test is ordering, not the
+    anchored approval gate."""
+    ctx = GateContext(plan=_two_task_plan(approved=True), completed_task_ids=set())
     decision = evaluate(_cmd(task_id="task-b"), ExecutionEnv.CALDERA_ONLY, context=ctx)
     assert decision.final == Verdict.DENY
     assert decision.stages[0].stage == "plan_consistency"
@@ -268,7 +272,7 @@ def test_missing_predecessor_denied():
 def test_predecessor_complete_passes_plan_consistency():
     """Same skip-ahead command, but with the predecessor marked complete, passes
     plan_consistency (final ESCALATE via the llm_judge stub, not a DENY)."""
-    ctx = GateContext(plan=_two_task_plan(), completed_task_ids={"task-a"})
+    ctx = GateContext(plan=_two_task_plan(approved=True), completed_task_ids={"task-a"})
     decision = evaluate(_cmd(task_id="task-b"), ExecutionEnv.CALDERA_ONLY, context=ctx)
     by_stage = {s.stage: s.verdict for s in decision.stages}
     assert by_stage["plan_consistency"] == Verdict.APPROVE

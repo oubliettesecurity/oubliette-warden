@@ -30,12 +30,18 @@ from oubliette_warden.operator_ui.review_queue import ReviewQueue, ReviewVerdict
 
 def _ctx_for(task_id: str, targets: list[str], technique_ids: list[str]) -> GateContext:
     """Minimal single-node plan context that attributes a command so the gate's
-    plan_consistency stage APPROVEs and downstream stages can be exercised."""
+    plan_consistency stage APPROVEs and downstream stages can be exercised.
+
+    operator_approved=True: default plan_trust is now 'anchored', so a task
+    must carry operator approval to pass plan_consistency regardless of the
+    downstream stage under test here.
+    """
     node = Task(
         task_id=task_id,
         intent="gate-test",
         target_scope=targets,
         attck_technique_ids=technique_ids,
+        operator_approved=True,
         metadata={},  # no phase -> adapter/phase check skipped
     )
     plan = TaskGraph(intent="t", target_scope=targets, nodes=[node], edges=[])

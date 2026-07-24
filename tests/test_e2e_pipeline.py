@@ -10,6 +10,7 @@ agents holds — not to benchmark scan latency.
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from itertools import count
 from pathlib import Path
@@ -225,10 +226,20 @@ def test_analyst_respects_asset_profile_in_e2e(planner, tmp_path):
 def test_full_pipeline_threads_plan_context(planner, tmp_path):
     """With a GateContext threaded from the plan (as the orchestrator supplies),
     the default gate path runs plan_consistency FIRST and never fails closed:
-    each attributable, in-order command is admitted by attribution (the run may
-    still ESCALATE downstream via the llm_judge stub, but plan_consistency never
-    DENYs an on-plan command). This is the wired path CRIT-1 delivers."""
+    each attributable, in-order, operator-approved command is admitted by
+    attribution (the run may still ESCALATE downstream via the llm_judge stub,
+    but plan_consistency never DENYs an on-plan command). Default plan_trust is
+    now 'anchored', so the plan is stamped operator_approved=True here to model
+    the human sign-off a real orchestrator would obtain before executing it —
+    without that, anchored mode DENYs every task by design (see
+    test_full_pipeline_without_context_fails_closed's sibling in
+    test_plan_consistency.py / test_safety_gate.py). This is the wired path
+    CRIT-1 delivers."""
     graph = planner.plan("vuln scan against 10.50.0.0/24")
+    graph = dataclasses.replace(
+        graph,
+        nodes=[dataclasses.replace(t, operator_approved=True) for t in graph.nodes],
+    )
     nmap = NmapAdapter(scratch_dir=tmp_path)
 
     completed: set[str] = set()

@@ -57,7 +57,7 @@ class VerifierConfig:
     """The knobs that are the experiment."""
 
     strictness: float = 0.5  # reserved: tunes the APPROVE<->ESCALATE boundary
-    plan_trust: str = "model"  # "model" (injection-influenceable) | "anchored" (human-approved baseline)
+    plan_trust: str = "anchored"  # "model" (injection-influenceable) | "anchored" (human-approved baseline, default)
     reason_verbosity: str = (
         "terse"  # "terse" | "verbose" (leaks boundary detail to an observing attacker)
     )
