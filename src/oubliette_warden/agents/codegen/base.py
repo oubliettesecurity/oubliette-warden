@@ -113,6 +113,13 @@ class CommandAdapter(ABC):
     # it holds a ``safety_gate.GateContext``.
     _gate_context: Any = None
 
+    # Last GateDecision produced by ``_gate_or_raise``. Populated on every gate
+    # run — including the DENY/ESCALATE paths that raise — so a driving runner
+    # (ExecutionSession) can record *why* a command was admitted or blocked for
+    # the audit trail without re-evaluating the gate. Typed as Any to avoid a
+    # base<->safety_gate import cycle; it holds a ``safety_gate.GateDecision``.
+    _last_gate_decision: Any = None
+
     @abstractmethod
     def is_available(self) -> bool:
         """Return True if the underlying tool binary is present and runnable."""
@@ -157,6 +164,9 @@ class CommandAdapter(ABC):
         from . import safety_gate
 
         decision = safety_gate.evaluate(command, env, context=self._gate_context)
+        # Record for the driving runner's audit trail (populated before any
+        # raise below, so blocked commands still surface their decision).
+        self._last_gate_decision = decision
         if decision.final == safety_gate.Verdict.APPROVE:
             return
         if decision.final == safety_gate.Verdict.DENY:
