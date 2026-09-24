@@ -38,6 +38,7 @@ import hmac
 import os
 from typing import Any
 
+from .. import __version__
 from .review_queue import ReviewQueue, ReviewQueueError, ReviewVerdict
 
 API_KEYS_ENV_VAR = "OUBLIETTE_WARDEN_API_KEYS"
@@ -122,7 +123,7 @@ def create_app(queue: ReviewQueue, api_keys: dict[str, str] | None = None):
                 return operator_id
         raise HTTPException(status_code=401, detail="invalid API credentials")
 
-    app = FastAPI(title="Oubliette Warden Operator UI", version="0.1.0")
+    app = FastAPI(title="Oubliette Warden Operator UI", version=__version__)
 
     @app.get("/reviews")
     def list_reviews(
