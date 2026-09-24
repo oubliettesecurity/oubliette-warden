@@ -4,8 +4,8 @@
 
 Oubliette Warden coordinates a team of AI agents to run authorized defensive cyber and
 penetration-testing workflows end to end — planning, reconnaissance/analysis, code generation
-& execution, and vulnerability research — with **every tool invocation gated by the Oubliette
-Shield safety pipeline** and **every action reviewable by a human operator before it runs**.
+& execution, and vulnerability research — with **every tool invocation gated by Warden's
+built-in, fail-closed safety gate** and **every action reviewable by a human operator before it runs**.
 
 > *Part of the Oubliette platform — Shield defends · Dungeon attacks · Trap traps · **Warden operates.***
 
@@ -19,7 +19,7 @@ require authorized-use attestation.
 ## The agents
 - **Planner** — turns a high-level objective into an ATT&CK-aligned task graph.
 - **Cyber Analysis** — ingests scan/recon output (e.g. Nmap XML) into ranked, evidence-backed findings.
-- **Code Generation & Execution** — emits parameterized tool invocations (nmap / Metasploit); **every command passes the Shield safety gate** before it runs, inside an emulated range (e.g. MITRE CALDERA).
+- **Code Generation & Execution** — emits parameterized tool invocations (nmap / Metasploit auxiliary scanners); **every command passes Warden's built-in safety gate** before it runs, inside an emulated range (e.g. MITRE CALDERA).
 - **Vulnerability Research** — citation-bound RAG over an NVD corpus with evidence-integrity enforcement.
 - **Operator UI** — human-on-the-loop review/approve/reject of every agent action, with an audit trail.
 
@@ -68,9 +68,17 @@ quietly is how a safety-gated framework grows an ungated path.
 
 ## Safety model
 1. The CodeGen agent never executes directly — it proposes a command.
-2. The command passes the **5-stage safety pipeline**, with `plan_consistency`
-   running first and **failing closed**: a command carrying no plan attribution
-   is denied as unattributable, so nothing executes outside an approved plan.
+2. The command passes Warden's **built-in safety gate**: a `plan_consistency`
+   check runs first and **fails closed** (a command carrying no plan attribution
+   is denied as unattributable, so nothing executes outside an approved plan),
+   followed by five deterministic stages: `pre_filter`, `pattern_detector`,
+   `rag_guard`, `llm_judge`, `mcp_guard`. Any DENY blocks the command.
+
+   Two of those stages are placeholders today: `rag_guard` is an allow-list of
+   known adapters (anything else escalates), and `llm_judge` has no model wired
+   in, so it escalates every command to the operator instead of approving it.
+   The code marks both as integration points for Oubliette Shield's modules;
+   Shield is not a dependency and is not called today.
 3. A **human operator** approves it in the Operator UI before execution.
 4. Execution is confined to an authorized/emulated target; everything is audit-logged and replayable.
 

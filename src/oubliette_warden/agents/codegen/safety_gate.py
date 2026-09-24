@@ -1,10 +1,12 @@
 """
 Pre-execution safety gate for the Oubliette Warden Code Generation & Execution agent.
 
-Wraps Oubliette Shield's five-stage pipeline as a gate that decides whether a
-proposed Command may execute. Phase I implements a deterministic skeleton with
-typed checks; the LLM-judge and rag_guard stages are wired through stubs that
-can be swapped for the real `oubliette_shield` modules at integration time.
+Warden's built-in, fail-closed gate that decides whether a proposed Command
+may execute. Its stages are modeled on Oubliette Shield's five-stage pipeline,
+but Shield is not a dependency and is not called today. Phase I implements a
+deterministic skeleton with typed checks; the LLM-judge and rag_guard stages
+are placeholder stubs and are the planned integration points for Shield's
+modules.
 
 Decisions are one of:
     APPROVE — execute as proposed
@@ -110,9 +112,10 @@ def _stage_pattern_detector(cmd: Command, env: ExecutionEnv) -> StageResult:
 def _stage_rag_guard(cmd: Command, env: ExecutionEnv) -> StageResult:
     """Stub for retrieval-grounded policy check.
 
-    Phase I returns APPROVE for adapters on a known-good list. The real
-    implementation will call `oubliette_shield.rag_guard` against a curated
-    policy corpus.
+    Phase I returns APPROVE for adapters on a known-good list and ESCALATEs
+    anything else. This is a planned integration point for Shield's
+    `oubliette_shield.rag_guard` against a curated policy corpus; Shield is not
+    a dependency and is not called today.
     """
     known_good_adapters = {"nmap", "msf-aux"}
     if cmd.adapter_name not in known_good_adapters:
