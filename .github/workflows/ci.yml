@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  # Test gate lives in the unified test.yml workflow (uv + py3.13 + .[test]).
+  # This workflow keeps the build + packaging-boundary gate.
+  build:
+    # Same allowlist gate the publish workflow runs before uploading.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Build sdist and wheel
+        run: |
+          pip install build
+          python -m build
+      - name: Packaging boundary check
+        env:
+          WARDEN_REQUIRE_DIST: "1"
+        run: |
+          pip install pytest "setuptools>=77.0"
+          python -m pytest -q --noconftest tests/test_packaging_boundary.py

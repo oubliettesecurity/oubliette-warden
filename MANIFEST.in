@@ -1,0 +1,6 @@
+# sdist contents.
+#
+# setuptools sweeps tests/test*.py into the sdist by default. The published
+# artifacts carry only the oubliette_warden package plus metadata; the test
+# suite stays in the repo. Enforced by tests/test_packaging_boundary.py.
+prune tests

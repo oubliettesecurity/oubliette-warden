@@ -47,6 +47,10 @@ dev = [
 # Clean-machine test environment: `uv pip install -e ".[test]" && pytest` -> green.
 test = [
     "oubliette-warden[dev]",
+    # tests/test_packaging_boundary.py resolves the package list with
+    # setuptools; uv venvs do not ship it, and a silently skipped boundary
+    # guard is exactly the failure mode that test exists to prevent.
+    "setuptools>=77.0",
 ]
 
 [project.scripts]
